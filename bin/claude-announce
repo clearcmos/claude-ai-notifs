@@ -1,0 +1,174 @@
+#!/bin/bash
+# Claude Code Stop + Notification hook: spoken announcements for macOS
+# Terminal.app. Port of a sibling Linux setup's claude-announce, with its
+# foot-terminal bell plumbing replaced by a direct AppleScript focus check.
+#
+# Modes (first argument):
+#   stop (default)  announce the task that just finished
+#   notification    announce what Claude is waiting on (AskUserQuestion
+#                   questions and tool permission prompts both arrive as
+#                   notification_type=permission_prompt; the pending tool_use
+#                   in the transcript tells them apart)
+#
+# Pipeline: check whether the user is looking at this session's Terminal tab
+# (frontmost app is Terminal AND the front window's selected tab owns this
+# session's tty). If focused, exit silently. Otherwise: read the hook JSON on
+# stdin, pull the last real user prompt plus Claude's final reply out of the
+# transcript (claude-announce-extract.py), compress them into one short spoken
+# sentence with Apple's on-device foundation model (claude-announce-summarize,
+# falling back to `claude -p --model haiku`), synthesize with Kokoro TTS
+# (af_heart voice, same as the Linux setup) and play it with afplay. Focus is
+# re-checked right before playback since generation takes a few seconds.
+#
+# Unlike Linux, no terminal fork is needed: foot owned the focus logic there
+# (its [bell] command only ran for unfocused tabs), while Terminal.app exposes
+# tab focus over AppleScript so the hook decides by itself.
+#
+# Every stage fails toward something audible (Kokoro -> say -> plain ding) and
+# the script always exits 0 so it can never block a session.
+#
+# Env knobs:
+#   CLAUDE_ANNOUNCE_INNER=1  set on the claude -p fallback so the inner
+#                            session's own Stop hook exits immediately
+#   CLAUDE_ANNOUNCE_FORCE=1  skip both focus checks (used by setup.sh --test)
+#
+# Runtime pieces (created by setup.sh):
+#   ~/.local/share/claude-ai-notifs/venv                       kokoro-onnx venv
+#   ~/.local/share/claude-ai-notifs/kokoro-v1.0.onnx
+#   ~/.local/share/claude-ai-notifs/voices-v1.0.bin
+#   ~/.local/share/claude-ai-notifs/bin/claude-announce-summarize
+#
+# Wired into ~/.claude/settings.json (hooks.Stop and hooks.Notification) by
+# setup.sh, by absolute path.
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE="$HOME/.local/share/claude-ai-notifs"
+VENV_PY="$BASE/venv/bin/python"
+SUMMARIZE="$BASE/bin/claude-announce-summarize"
+EXTRACT="$REPO/bin/claude-announce-extract.py"
+TTS="$REPO/bin/claude-announce-tts.py"
+DING="/System/Library/Sounds/Glass.aiff"
+MODE="${1:-stop}"
+
+# Recursion guard: the claude -p fallback is itself a claude session whose
+# Stop hook would run this script again.
+[ -n "$CLAUDE_ANNOUNCE_INNER" ] && exit 0
+
+input=$(cat 2>/dev/null)
+
+ding() {
+    afplay "$DING" >/dev/null 2>&1
+    exit 0
+}
+
+# Homebrew coreutils `timeout` when present, otherwise a background watchdog
+# (macOS has no native timeout binary).
+with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+        return
+    fi
+    "$@" &
+    local pid=$!
+    ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
+    local watcher=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return "$rc"
+}
+
+# Climb the process tree to the ancestor that owns the session tty (hooks run
+# without a controlling terminal; the claude process has one, ttysNNN).
+pid=$$
+tty=""
+for _ in 1 2 3 4 5 6 7 8; do
+    t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$t" in
+        ttys*) tty="$t"; break ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    { [ -z "$pid" ] || [ "$pid" = "0" ] || [ "$pid" = "1" ]; } && break
+done
+
+# True when Terminal is the frontmost app and its front window's selected tab
+# is this session's tab. Any failure (no tty, not Terminal.app, AppleScript
+# denied) reports not-focused, so announcements fail open rather than being
+# silently dropped.
+is_focused() {
+    [ -n "$CLAUDE_ANNOUNCE_FORCE" ] && return 1
+    [ -n "$tty" ] || return 1
+    local front active
+    front=$(lsappinfo info -only name "$(lsappinfo front 2>/dev/null)" 2>/dev/null)
+    case "$front" in
+        *'"Terminal"'*)
+            active=$(osascript -e 'tell application "Terminal" to tty of selected tab of front window' 2>/dev/null)
+            [ "${active##*/}" = "$tty" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+# Silent while the user is watching this tab, exactly like foot's
+# command-focused=no on Linux.
+is_focused && exit 0
+
+# Extract the announcement material from the transcript. Prefer the venv
+# python (always present after setup); fall back to any python3.
+PY="$VENV_PY"
+[ -x "$PY" ] || PY="$(command -v python3)"
+[ -n "$PY" ] || ding
+task=$(printf '%s' "$input" | "$PY" "$EXTRACT" "$MODE" 2>/dev/null)
+[ -n "$task" ] || ding
+
+if [ "$MODE" = "notification" ]; then
+    instruction="Claude, the user's AI coding assistant, has paused and needs the user. In ONE sentence, at most 14 words, tell the user what Claude is asking or waiting for. Present tense, plain English, no quotes, no preamble, no emojis."
+else
+    instruction="Claude, the user's AI coding assistant, just finished a task. Summarize what happened in ONE sentence of at most 14 words, past tense, plain English, no quotes, no preamble, no emojis. Base it ONLY on what the assistant reply says was done or found; never infer an outcome from the user request. If the reply is missing or does not clearly state an outcome, say what Claude worked on without claiming it succeeded or is fixed. If the request was a question, announce what was answered or found, never a fabricated action."
+fi
+
+clean() {
+    tr -d '"' | tr '\n' ' ' | sed 's/^ *//; s/ *$//' | head -c 300
+}
+
+# The on-device model follows the task best when the full instruction lives in
+# the prompt with a trailer, not in the session instructions (tested: putting
+# it in instructions makes the 3B-class model echo the reply verbatim).
+prompt="$instruction
+
+$task
+
+One-sentence announcement:"
+
+summary=""
+if [ -x "$SUMMARIZE" ]; then
+    summary=$(with_timeout 30 "$SUMMARIZE" \
+        "You write one-line spoken announcements for a terminal notification system." \
+        "$prompt" 2>/dev/null </dev/null | clean)
+fi
+if [ -z "$summary" ] && command -v claude >/dev/null 2>&1; then
+    summary=$(CLAUDE_ANNOUNCE_INNER=1 with_timeout 60 \
+        claude -p --model haiku "$prompt" 2>/dev/null </dev/null | clean)
+fi
+[ -n "$summary" ] || ding
+
+# Kokoro synth; if the venv or models are missing, degrade to the native say
+# voice rather than dropping the announcement.
+wav="${TMPDIR:-/tmp}/claude-announce-$$.wav"
+if [ -x "$VENV_PY" ]; then
+    with_timeout 45 "$VENV_PY" "$TTS" "$summary" "$wav" >/dev/null 2>&1
+fi
+
+# Generation took a few seconds; if the user switched to this tab meanwhile,
+# stay silent.
+is_focused && { rm -f "$wav"; exit 0; }
+
+if [ -s "$wav" ]; then
+    afplay "$wav" >/dev/null 2>&1
+else
+    say "$summary" >/dev/null 2>&1
+fi
+rm -f "$wav"
+exit 0
