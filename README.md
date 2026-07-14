@@ -37,7 +37,10 @@ macOS.
    `claude-announce-summarize` binary. If the model is unavailable, it falls
    back to `claude -p --model haiku`.
 5. Kokoro TTS (af_heart voice, same as the Linux setup) synthesizes the
-   sentence and `afplay` speaks it. Focus is re-checked before playback.
+   sentence and `afplay` speaks it. Focus is re-checked before playback, and
+   playback is serialized across sessions - if two sessions finish at once the
+   announcements queue and play back-to-back instead of talking over each
+   other.
 6. In a meeting the voice stays quiet: when any process is capturing the
    microphone (Zoom, Google Meet, Teams, Webex, Slack huddles, FaceTime -
    detected via CoreAudio, muted-but-joined included), the summary arrives as

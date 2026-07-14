@@ -87,7 +87,9 @@ ding() {
             banner "Turn finished"
         fi
     fi
-    afplay "$DING" >/dev/null 2>&1
+    audio_lock
+    trap 'audio_unlock' EXIT
+    with_timeout 15 afplay "$DING" >/dev/null 2>&1
     exit 0
 }
 
@@ -108,6 +110,38 @@ with_timeout() {
     kill "$watcher" 2>/dev/null
     wait "$watcher" 2>/dev/null
     return "$rc"
+}
+
+# Serialize audio playback so two sessions finishing at once queue instead of
+# talking over each other. mkdir is an atomic mutex needing no extra tool
+# (macOS has no flock); waiters spin until the holder releases. A crashed
+# holder is reclaimed via its recorded PID, and a ~120s backstop keeps a wedged
+# state from deadlocking. Playback is bounded by with_timeout, so the lock is
+# normally held only a few seconds. The path is per-user and fixed (not under
+# $TMPDIR) so every one of the user's sessions shares the one lock.
+AUDIO_LOCK="/tmp/claude-announce-audio-$(id -u).lock"
+
+audio_lock() {
+    local waited=0
+    until mkdir "$AUDIO_LOCK" 2>/dev/null; do
+        local holder
+        holder=$(cat "$AUDIO_LOCK/pid" 2>/dev/null)
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            rm -rf "$AUDIO_LOCK"            # holder gone; reclaim its turn
+            continue
+        fi
+        sleep 0.2
+        waited=$((waited + 1))
+        if [ "$waited" -ge 600 ]; then      # backstop: never block forever
+            rm -rf "$AUDIO_LOCK"
+            waited=0
+        fi
+    done
+    printf '%s' "$$" > "$AUDIO_LOCK/pid" 2>/dev/null || true
+}
+
+audio_unlock() {
+    rm -rf "$AUDIO_LOCK" 2>/dev/null || true
 }
 
 # Climb the process tree to the ancestor that owns the session tty (hooks run
@@ -199,10 +233,18 @@ fi
 is_focused && { rm -f "$wav"; exit 0; }
 in_meeting && { rm -f "$wav"; banner "$summary"; }
 
+# Serialize playback: wait our turn so concurrent announcements queue rather
+# than overlap. Re-check focus/meeting once we hold the channel, since we may
+# have waited behind another announcement and the state can change meanwhile.
+audio_lock
+trap 'audio_unlock' EXIT
+is_focused && { rm -f "$wav"; exit 0; }
+in_meeting && { rm -f "$wav"; banner "$summary"; }
+
 if [ -s "$wav" ]; then
-    afplay "$wav" >/dev/null 2>&1
+    with_timeout 30 afplay "$wav" >/dev/null 2>&1
 else
-    say "$summary" >/dev/null 2>&1
+    with_timeout 30 say "$summary" >/dev/null 2>&1
 fi
 rm -f "$wav"
 exit 0

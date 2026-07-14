@@ -51,6 +51,16 @@ announce the same things.
   carries a neutral "none recorded" note plus the final tool action, and the
   instruction forbids inferring outcomes from the request. The sibling Linux
   setup calls the same claude-announce-extract.py; keep the copies identical.
+- Playback is serialized (2026-07-14): two sessions finishing at once used to
+  talk over each other. audio_lock/audio_unlock in bin/claude-announce is a
+  mkdir mutex on /tmp/claude-announce-audio-<uid>.lock (macOS has no flock, and
+  a fixed per-user path outside $TMPDIR guarantees all the user's sessions
+  share it), so concurrent announcements queue and play back-to-back. Both the
+  main afplay/say path and the ding fallback take it; the focus/meeting state
+  is re-checked after acquiring the lock (the wait may have been long); a
+  crashed holder is reclaimed via its recorded PID with a ~120s backstop;
+  playback is with_timeout-bounded so the lock is held only seconds; and an
+  EXIT trap releases it on every exit path, including the meeting-banner exit.
 
 ## Deployment
 
