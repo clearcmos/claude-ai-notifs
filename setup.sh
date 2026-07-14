@@ -20,7 +20,7 @@
 #
 # New-MacBook prerequisites this script checks for but does not install:
 #   xcode-select --install         (swiftc, git)
-#   brew install python@3.12 jq    (python for the venv; jq optional)
+#   brew install python@3.12       (python for the venv; or install uv)
 # Everything else (say, afplay, osascript, curl) ships with macOS.
 
 set -euo pipefail

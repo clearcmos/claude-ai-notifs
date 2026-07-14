@@ -6,6 +6,18 @@ looking at another tab, window, or app, a synthesized voice tells you what
 happened ("Claude fixed the failing auth tests, all 47 now pass") instead of a
 plain ding.
 
+Before you install, two things that shape the experience:
+
+- **Apple Silicon Mac, macOS 26+.** Apple Silicon is required. The fast
+  on-device summarizer additionally needs macOS 26 with Apple Intelligence
+  enabled; without it, summaries fall back to `claude -p --model haiku`, which
+  works but uses your Claude plan (or API billing) and adds a few seconds per
+  announcement.
+- **Focus detection only understands Terminal.app.** This is what keeps it
+  quiet while you are looking at the session. In iTerm2, Ghostty, Warp, or a
+  VS Code terminal the check fails open, so announcements play on every turn,
+  including while you are watching the tab. Everything else still works.
+
 This started as a macOS port of a personal Linux setup built around a patched
 foot terminal (the terminal owned the tab-focus logic there). Terminal.app
 exposes tab focus over AppleScript, so no terminal changes are needed on
@@ -58,14 +70,12 @@ machine:
 
 Notes if you are not the author:
 
-- Focus detection only knows Terminal.app. In iTerm2, Ghostty, or an IDE
-  terminal the focus check fails open, so announcements play even while you
-  are looking at the session. Everything else works.
 - Existing hooks in `~/.claude/settings.json` are preserved; setup only
   appends its own Stop/Notification entries (and re-runs replace them).
-- Without Apple Intelligence enabled, summaries fall back to
-  `claude -p --model haiku`, which uses your Claude plan (or API billing) and
-  adds a few seconds per announcement.
+- The Kokoro models (~340 MB) are downloaded from the `thewh1teagle/kokoro-onnx`
+  GitHub release; setup needs network for that and for the pip install.
+- See the note at the top about Terminal.app-only focus detection and the
+  macOS 26 / Apple Intelligence summarizer fallback.
 
 Re-runnable. Hook wiring backs up `~/.claude/settings.json` first and, if an
 older `notify-unfocused.sh` Notification hook is present, replaces it (this
