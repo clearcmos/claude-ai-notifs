@@ -26,9 +26,16 @@ macOS.
    back to `claude -p --model haiku`.
 5. Kokoro TTS (af_heart voice, same as the Linux setup) synthesizes the
    sentence and `afplay` speaks it. Focus is re-checked before playback.
+6. In a meeting the voice stays quiet: when any process is capturing the
+   microphone (Zoom, Google Meet, Teams, Webex, Slack huddles, FaceTime -
+   detected via CoreAudio, muted-but-joined included), the summary arrives as
+   a silent macOS banner notification instead. Any other mic use (dictation,
+   audio recording) suppresses the voice the same way. Mic state is
+   re-checked right before playback in case a call starts mid-generation.
 
-Every stage degrades: no summary means the plain Glass ding, no Kokoro means
-the native `say` voice. The hook always exits 0 and can never block a session.
+Every stage degrades: no summary means the plain Glass ding (a generic banner
+in a meeting), no Kokoro means the native `say` voice. The hook always exits 0
+and can never block a session.
 
 ## Requirements
 

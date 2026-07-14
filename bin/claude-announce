@@ -20,6 +20,12 @@
 # (af_heart voice, same as the Linux setup) and play it with afplay. Focus is
 # re-checked right before playback since generation takes a few seconds.
 #
+# Meetings: when any process is capturing the microphone (Zoom, Google Meet,
+# Teams, Webex, Slack huddles... - claude-announce-miccheck, CoreAudio), the
+# voice is swapped for a silent macOS banner notification carrying the same
+# summary, so calls are never talked over but nothing is missed. Mic state is
+# re-checked before playback too, in case a call started mid-generation.
+#
 # Unlike Linux, no terminal fork is needed: foot owned the focus logic there
 # (its [bell] command only ran for unfocused tabs), while Terminal.app exposes
 # tab focus over AppleScript so the hook decides by itself.
@@ -45,6 +51,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
 VENV_PY="$BASE/venv/bin/python"
 SUMMARIZE="$BASE/bin/claude-announce-summarize"
+MICCHECK="$BASE/bin/claude-announce-miccheck"
 EXTRACT="$REPO/bin/claude-announce-extract.py"
 TTS="$REPO/bin/claude-announce-tts.py"
 DING="/System/Library/Sounds/Glass.aiff"
@@ -56,7 +63,30 @@ MODE="${1:-stop}"
 
 input=$(cat 2>/dev/null)
 
+# True when some process is capturing the microphone (exit 0 = BUSY). Missing
+# or failing tool means not-in-meeting, failing toward the voice.
+in_meeting() {
+    [ -x "$MICCHECK" ] && "$MICCHECK" >/dev/null 2>&1
+}
+
+# Silent banner notification; argv avoids any quoting of the message.
+banner() {
+    osascript -e 'on run argv' \
+              -e 'display notification (item 1 of argv) with title "Claude Code"' \
+              -e 'end run' "$1" >/dev/null 2>&1
+    exit 0
+}
+
+# Audible fallback when no summary could be produced; in a meeting it becomes
+# a generic banner instead of a sound.
 ding() {
+    if in_meeting; then
+        if [ "$MODE" = "notification" ]; then
+            banner "Waiting for your input"
+        else
+            banner "Turn finished"
+        fi
+    fi
     afplay "$DING" >/dev/null 2>&1
     exit 0
 }
@@ -154,6 +184,9 @@ if [ -z "$summary" ] && command -v claude >/dev/null 2>&1; then
 fi
 [ -n "$summary" ] || ding
 
+# In a meeting, deliver the summary as a silent banner instead of speaking.
+in_meeting && banner "$summary"
+
 # Kokoro synth; if the venv or models are missing, degrade to the native say
 # voice rather than dropping the announcement.
 wav="${TMPDIR:-/tmp}/claude-announce-$$.wav"
@@ -161,9 +194,10 @@ if [ -x "$VENV_PY" ]; then
     with_timeout 45 "$VENV_PY" "$TTS" "$summary" "$wav" >/dev/null 2>&1
 fi
 
-# Generation took a few seconds; if the user switched to this tab meanwhile,
-# stay silent.
+# Generation took a few seconds: if the user switched to this tab meanwhile
+# stay silent, and if a call started meanwhile use the banner.
 is_focused && { rm -f "$wav"; exit 0; }
+in_meeting && { rm -f "$wav"; banner "$summary"; }
 
 if [ -s "$wav" ]; then
     afplay "$wav" >/dev/null 2>&1

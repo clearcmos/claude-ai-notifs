@@ -34,6 +34,14 @@ announce the same things.
   native `say` when the venv or models are missing.
 - macOS has no `timeout` binary; `with_timeout` in bin/claude-announce uses
   Homebrew coreutils `timeout` when present, else a kill-after-sleep watchdog.
+- Meeting suppression is microphone-capture detection, not per-app logic:
+  claude-announce-miccheck (CoreAudio process-object API, macOS 14.4+,
+  kAudioProcessPropertyIsRunningInput) prints BUSY plus the capturing bundle
+  ids. One signal covers Zoom/Meet/Teams/Webex/Slack huddles, muted included
+  (meeting apps keep the capture stream open while muted). In-meeting delivery
+  is a silent banner (osascript display notification) carrying the same
+  summary; ding-path failures become a generic banner. A missing or failing
+  miccheck fails toward the voice so announcements are never silently lost.
 - Anti-hallucination (2026-07-14, after a real miss): the reply is the last
   contiguous run of assistant text WITHIN the current turn (after the last
   real user prompt), not just text after the last user-type entry - turns can

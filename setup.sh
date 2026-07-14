@@ -64,6 +64,12 @@ if [ "${1:-}" = "--test" ]; then
     else
         info "claude CLI (fallback summarizer): not found"
     fi
+    if [ -x "$BASE/bin/claude-announce-miccheck" ]; then
+        info "meeting detection (mic in use): $("$BASE/bin/claude-announce-miccheck" 2>/dev/null || true)"
+        info "  (BUSY means the announcement below arrives as a silent banner, not voice)"
+    else
+        info "meeting detection: not built (voice also plays during meetings)"
+    fi
     [ "$ok" = 1 ] || die "missing pieces above"
     transcript=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/memory/*' \
         -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
@@ -71,9 +77,14 @@ if [ "${1:-}" = "--test" ]; then
     info "announcing most recent transcript: $transcript"
     printf '{"transcript_path": "%s"}' "$transcript" \
         | CLAUDE_ANNOUNCE_FORCE=1 "$REPO/bin/claude-announce" stop
-    info "test done - you should have heard a spoken sentence."
-    info "heard nothing? Check the output volume, and that Terminal is allowed under"
-    info "System Settings > Privacy & Security > Automation (a prompt appears on first use)."
+    if [ -x "$BASE/bin/claude-announce-miccheck" ] \
+            && "$BASE/bin/claude-announce-miccheck" >/dev/null 2>&1; then
+        info "test done - the mic is in use, so this arrived as a silent banner notification."
+    else
+        info "test done - you should have heard a spoken sentence."
+    fi
+    info "heard/saw nothing? Check the output volume, notification settings, and that"
+    info "Terminal is allowed under System Settings > Privacy & Security > Automation."
     exit 0
 fi
 
@@ -206,6 +217,15 @@ if swiftc -O -parse-as-library "$REPO/src/claude-announce-summarize.swift" \
 else
     info "swiftc build failed (old CLT/SDK?); using the claude -p fallback only"
     rm -f "$BASE/bin/claude-announce-summarize"
+fi
+
+info "compiling claude-announce-miccheck (meeting detection)"
+if swiftc -O "$REPO/src/claude-announce-miccheck.swift" \
+        -o "$BASE/bin/claude-announce-miccheck" 2>/dev/null; then
+    info "microphone state now: $("$BASE/bin/claude-announce-miccheck" 2>/dev/null || true)"
+else
+    info "miccheck build failed; the voice will also play during meetings"
+    rm -f "$BASE/bin/claude-announce-miccheck"
 fi
 
 # 4. Hook wiring --------------------------------------------------------------
