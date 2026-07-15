@@ -1,8 +1,11 @@
 #!/bin/bash
-# Setup for claude-ai-notifs: spoken Claude Code announcements in macOS
-# Terminal.app. Idempotent; safe to re-run after pulling changes.
+# Setup for claude-ai-notifs: spoken Claude Code announcements in supported
+# macOS terminals. Idempotent; safe to re-run after pulling changes or to
+# enable additional terminals later.
 #
-#   ./setup.sh              full setup: venv, models, summarizer binary, hooks
+#   ./setup.sh              full setup: venv, models, summarizer, terminals, hooks
+#   ./setup.sh --terminals "ghostty,iterm2"
+#                           non-interactive terminal selection (keys, comma/space)
 #   ./setup.sh --test       after setup: run one end-to-end spoken announcement
 #                           against the most recent Claude transcript
 #   ./setup.sh --uninstall  remove the hooks and the runtime dir; the repo
@@ -14,7 +17,10 @@
 #      into ~/.local/share/claude-ai-notifs.
 #   3. Compiles the Apple Foundation Models summarizer with swiftc and reports
 #      whether Apple Intelligence is enabled.
-#   4. Wires hooks.Stop and hooks.Notification in ~/.claude/settings.json to
+#   4. Asks which installed terminals to announce in (multi-select; re-run to
+#      add more) and records them in ~/.local/share/claude-ai-notifs/
+#      enabled-terminals. Selecting kitty also enables its remote control.
+#   5. Wires hooks.Stop and hooks.Notification in ~/.claude/settings.json to
 #      bin/claude-announce (absolute path), backing up the old file first and
 #      removing any older notify-unfocused.sh entry this supersedes.
 #
@@ -29,9 +35,136 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
 RELEASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+# Terminals the announcement runs in (one canonical key per line). The hook
+# reads this and stays silent in terminals not listed here.
+ENABLED_FILE="$BASE/enabled-terminals"
+
+# Supported terminals, alphabetical by display name: "key|Display Name|bundle id".
+# The picker lists only those actually installed.
+SUPPORTED_TERMINALS=(
+    "alacritty|Alacritty|org.alacritty"
+    "ghostty|Ghostty|com.mitchellh.ghostty"
+    "iterm2|iTerm2|com.googlecode.iterm2"
+    "kitty|kitty|net.kovidgoyal.kitty"
+    "terminal|Terminal|com.apple.Terminal"
+    "wezterm|WezTerm|com.github.wez.wezterm"
+)
 
 info() { printf '==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Is a terminal (by bundle id) installed? Spotlight first, then well-known paths
+# (Spotlight can be disabled or slow to index a fresh install).
+terminal_installed() {
+    mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null | grep -q . && return 0
+    case "$1" in
+        com.apple.Terminal)       [ -d "/System/Applications/Utilities/Terminal.app" ] ;;
+        com.googlecode.iterm2)    [ -d "/Applications/iTerm.app" ] ;;
+        com.mitchellh.ghostty)    [ -d "/Applications/Ghostty.app" ] ;;
+        com.github.wez.wezterm)   [ -d "/Applications/WezTerm.app" ] ;;
+        org.alacritty)            [ -d "/Applications/Alacritty.app" ] ;;
+        net.kovidgoyal.kitty)     [ -d "/Applications/kitty.app" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+# kitty needs remote control enabled for the hook to query which window is
+# focused. Add it to kitty.conf idempotently (only if not already present).
+enable_kitty_remote_control() {
+    local conf="$HOME/.config/kitty/kitty.conf"
+    mkdir -p "$(dirname "$conf")"
+    [ -f "$conf" ] || : > "$conf"
+    if grep -qE '^[[:space:]]*allow_remote_control[[:space:]]+(yes|socket-only|socket|password)' "$conf" 2>/dev/null; then
+        info "  kitty: remote control already enabled ($conf)"
+        return
+    fi
+    grep -q 'claude-ai-notifs' "$conf" 2>/dev/null && return
+    {
+        printf '\n# claude-ai-notifs: let the announcement hook ask kitty which window\n'
+        printf '# is focused (per-tab detection). socket-only keeps it off the escape\n'
+        printf '# channel; the hook reaches it via the inherited KITTY_LISTEN_ON.\n'
+        printf 'allow_remote_control socket-only\n'
+        printf 'listen_on unix:/tmp/kitty-{kitty_pid}\n'
+    } >> "$conf"
+    info "  kitty: enabled remote control in $conf (restart kitty to apply)"
+}
+
+# Present the installed supported terminals (alphabetical) and let the user pick
+# which to enable. Idempotent: on re-run the current selection is pre-checked
+# and can be extended. Writes ENABLED_FILE. $1 is an optional preselection
+# (comma/space keys) for non-interactive use; empty means prompt.
+choose_terminals() {
+    local preselect="$1"
+    local keys=() names=() entry key name bid idx k
+    for entry in "${SUPPORTED_TERMINALS[@]}"; do
+        IFS='|' read -r key name bid <<< "$entry"
+        if terminal_installed "$bid"; then keys+=("$key"); names+=("$name"); fi
+    done
+    mkdir -p "$BASE"
+    if [ "${#keys[@]}" -eq 0 ]; then
+        info "no supported terminal detected; defaulting to Terminal.app"
+        printf 'terminal\n' > "$ENABLED_FILE"
+        return
+    fi
+
+    # Seed the selection: explicit preselection, else current file (re-run),
+    # else all installed (first run default).
+    local sel=" " p
+    if [ -n "$preselect" ]; then
+        for p in $(printf '%s' "$preselect" | tr ',' ' '); do sel="$sel$p "; done
+    elif [ -f "$ENABLED_FILE" ]; then
+        sel=" $(tr '\n' ' ' < "$ENABLED_FILE") "
+    else
+        for k in "${keys[@]}"; do sel="$sel$k "; done
+    fi
+
+    # Interactive toggle menu, unless a preselection was given or there is no tty.
+    if [ -z "$preselect" ] && [ -e /dev/tty ]; then
+        local line num i
+        while true; do
+            echo
+            info "Enable spoken announcements in which terminals? (installed only)"
+            i=1
+            for idx in "${!keys[@]}"; do
+                case "$sel" in *" ${keys[$idx]} "*) k="x";; *) k=" ";; esac
+                printf '     %d) [%s] %s\n' "$i" "$k" "${names[$idx]}"
+                i=$((i + 1))
+            done
+            printf '     toggle by number (e.g. "1 3"), or press Enter to confirm: '
+            read -r line < /dev/tty || line=""
+            [ -z "$line" ] && break
+            for num in $line; do
+                idx=$((num - 1))
+                k="${keys[$idx]:-}"
+                [ -n "$k" ] || continue
+                case "$sel" in
+                    *" $k "*) sel=$(printf '%s' "$sel" | sed "s/ $k / /") ;;
+                    *)        sel="$sel$k " ;;
+                esac
+            done
+        done
+    fi
+
+    # Write the enabled file (installed keys only, alphabetical) and run any
+    # per-terminal setup for the chosen ones.
+    : > "$ENABLED_FILE"
+    local chosen=()
+    for idx in "${!keys[@]}"; do
+        k="${keys[$idx]}"
+        case "$sel" in
+            *" $k "*)
+                printf '%s\n' "$k" >> "$ENABLED_FILE"
+                chosen+=("${names[$idx]}")
+                [ "$k" = kitty ] && enable_kitty_remote_control
+                ;;
+        esac
+    done
+    if [ "${#chosen[@]}" -gt 0 ]; then
+        info "announcements enabled in: ${chosen[*]}"
+    else
+        info "no terminals selected - the hook will stay silent until you re-run and pick some"
+    fi
+}
 
 # Catch-all for anything not individually guarded below: say what failed and
 # that re-running is safe (every step is idempotent).
@@ -69,6 +202,11 @@ if [ "${1:-}" = "--test" ]; then
         info "  (BUSY means the announcement below arrives as a silent banner, not voice)"
     else
         info "meeting detection: not built (voice also plays during meetings)"
+    fi
+    if [ -f "$ENABLED_FILE" ]; then
+        info "enabled terminals: $(tr '\n' ' ' < "$ENABLED_FILE")"
+    else
+        info "enabled terminals: (none recorded - announces in every terminal)"
     fi
     [ "$ok" = 1 ] || die "missing pieces above"
     transcript=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/memory/*' \
@@ -228,7 +366,20 @@ else
     rm -f "$BASE/bin/claude-announce-miccheck"
 fi
 
-# 4. Hook wiring --------------------------------------------------------------
+# 4. Terminal selection ------------------------------------------------------
+
+# Preselection for non-interactive installs: CLAUDE_ANNOUNCE_TERMINALS env var
+# or  --terminals "ghostty,iterm2"  on the command line. Empty => interactive.
+PRESELECT="${CLAUDE_ANNOUNCE_TERMINALS:-}"
+for ((i = 1; i <= $#; i++)); do
+    case "${!i}" in
+        --terminals)   j=$((i + 1)); PRESELECT="${!j:-}" ;;
+        --terminals=*) v="${!i}"; PRESELECT="${v#--terminals=}" ;;
+    esac
+done
+choose_terminals "$PRESELECT"
+
+# 5. Hook wiring --------------------------------------------------------------
 
 info "wiring hooks into $SETTINGS"
 WIRE_PY="${PYTHON:-python3}"

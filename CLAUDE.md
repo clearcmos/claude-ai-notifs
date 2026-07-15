@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Spoken announcements for Claude Code sessions in macOS Terminal.app. See
-README.md for the user-facing overview; this file records what matters when
-changing the code.
+Spoken announcements for Claude Code sessions in supported macOS terminals
+(Terminal.app, iTerm2, Ghostty, WezTerm, kitty, Alacritty). See README.md for
+the user-facing overview; this file records what matters when changing the code.
 
 ## Provenance
 
@@ -61,14 +61,58 @@ announce the same things.
   crashed holder is reclaimed via its recorded PID with a ~120s backstop;
   playback is with_timeout-bounded so the lock is held only seconds; and an
   EXIT trap releases it on every exit path, including the meeting-banner exit.
+- Multi-terminal support (2026-07-15): focus detection is a dispatch keyed on
+  the frontmost app's bundle id (front_bundle_id via lsappinfo). Each branch
+  answers "is the frontmost terminal's active tab THIS session's tty":
+  Terminal.app/iTerm2/Ghostty via AppleScript (`tty of ...`; iTerm2's scripting
+  name is "iTerm", NOT "iTerm2"; Ghostty exposes `tty`/`pid` only on builds
+  newer than v1.3.1 - older ones return empty and fall through to speak);
+  WezTerm via `wezterm cli list-clients` (focused_pane_id) matched to the pane
+  from `wezterm cli list` (tty_name) or $WEZTERM_PANE; kitty via `kitty @ ls`
+  (focused window id vs the inherited $KITTY_WINDOW_ID), which needs
+  allow_remote_control. Alacritty has no per-session API (verified: no sdef, IPC
+  is create-window/config/get-config only) so it always speaks. Every branch
+  fails open (speak) on any uncertainty - announcements are never dropped.
+- Per-terminal opt-in + gating (2026-07-15): setup.sh writes the chosen
+  terminals to $BASE/enabled-terminals (canonical keys: terminal, iterm2,
+  ghostty, wezterm, kitty, alacritty). The hook derives its host terminal from
+  the inherited env (host_terminal) and exits silently unless that terminal is
+  listed. host_terminal checks terminal-specific vars (KITTY_WINDOW_ID,
+  WEZTERM_PANE, GHOSTTY_*, ALACRITTY_*, ITERM_SESSION_ID) BEFORE $TERM_PROGRAM,
+  because $TERM_PROGRAM is inherited-stale in nested launches (kitty launched
+  from a Terminal.app shell keeps TERM_PROGRAM=Apple_Terminal - it only sets
+  KITTY_WINDOW_ID/TERM=xterm-kitty). A missing enabled-terminals file means a
+  pre-feature install: announce everywhere (backward compatible). Unknown host
+  => silent (only speak where opted in).
+- setup.sh terminal picker: lists only installed terminals (mdfind by bundle id
+  + path fallback), alphabetical, bash 3.2-safe multi-select toggle (macOS
+  /bin/bash is 3.2 - no associative arrays; selection is a space-delimited
+  string). Idempotent: re-run pre-checks the current selection and can add more.
+  Non-interactive via `--terminals "a,b"` or $CLAUDE_ANNOUNCE_TERMINALS.
+  Selecting kitty appends allow_remote_control (socket-only) + listen_on to
+  kitty.conf, idempotently.
 
 ## Deployment
 
 `setup.sh` is idempotent: venv + model downloads + swiftc build into
-`~/.local/share/claude-ai-notifs`, then wires `hooks.Stop` and
+`~/.local/share/claude-ai-notifs`, then the terminal picker (writes
+`enabled-terminals`, configures kitty if chosen), then wires `hooks.Stop` and
 `hooks.Notification` in `~/.claude/settings.json` by absolute repo path
-(backing up the file first). `setup.sh --test` speaks one announcement from
-the newest transcript with focus checks bypassed (CLAUDE_ANNOUNCE_FORCE=1).
+(backing up the file first). `setup.sh --test` speaks one announcement from the
+newest transcript with both the focus check and the terminal gate bypassed
+(CLAUDE_ANNOUNCE_FORCE=1 skips both).
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.
+
+## Debugging
+
+Silent hooks are otherwise opaque, so the hook has a `dbg` trace: set
+`CLAUDE_ANNOUNCE_DEBUG=1`, or `touch ~/.local/share/claude-ai-notifs/debug`
+(the flag file needs no env var, which matters because the hook is spawned by
+Claude Code, not launched by hand), and it appends its decisions to
+`~/.local/share/claude-ai-notifs/debug.log`: host terminal, gate/focus outcome,
+task length, which summarizer produced the sentence (and its length), and the
+final action (kokoro wav / say / ding / banner). This is how the "Ghostty
+dinged" report was traced to a one-off model cold-start rather than a bug.
+Remove the flag file to disable.

@@ -36,13 +36,17 @@
 # Env knobs:
 #   CLAUDE_ANNOUNCE_INNER=1  set on the claude -p fallback so the inner
 #                            session's own Stop hook exits immediately
-#   CLAUDE_ANNOUNCE_FORCE=1  skip both focus checks (used by setup.sh --test)
+#   CLAUDE_ANNOUNCE_FORCE=1  skip the terminal gate and both focus checks
+#                            (used by setup.sh --test)
+#   CLAUDE_ANNOUNCE_DEBUG=1  trace decisions to <base>/debug.log; the flag file
+#                            <base>/debug turns this on without an env var
 #
 # Runtime pieces (created by setup.sh):
 #   ~/.local/share/claude-ai-notifs/venv                       kokoro-onnx venv
 #   ~/.local/share/claude-ai-notifs/kokoro-v1.0.onnx
 #   ~/.local/share/claude-ai-notifs/voices-v1.0.bin
 #   ~/.local/share/claude-ai-notifs/bin/claude-announce-summarize
+#   ~/.local/share/claude-ai-notifs/enabled-terminals            picked terminals
 #
 # Wired into ~/.claude/settings.json (hooks.Stop and hooks.Notification) by
 # setup.sh, by absolute path.
@@ -55,6 +59,10 @@ MICCHECK="$BASE/bin/claude-announce-miccheck"
 EXTRACT="$REPO/bin/claude-announce-extract.py"
 TTS="$REPO/bin/claude-announce-tts.py"
 DING="/System/Library/Sounds/Glass.aiff"
+# Terminals the user enabled at install (one canonical key per line, written by
+# setup.sh). Absent = installed before multi-terminal support; announce anywhere.
+ENABLED_FILE="$BASE/enabled-terminals"
+DEBUG_LOG="$BASE/debug.log"
 MODE="${1:-stop}"
 
 # Recursion guard: the claude -p fallback is itself a claude session whose
@@ -80,6 +88,7 @@ banner() {
 # Audible fallback when no summary could be produced; in a meeting it becomes
 # a generic banner instead of a sound.
 ding() {
+    dbg "ding: falling back to Glass/banner (no spoken summary)"
     if in_meeting; then
         if [ "$MODE" = "notification" ]; then
             banner "Waiting for your input"
@@ -144,6 +153,15 @@ audio_unlock() {
     rm -rf "$AUDIO_LOCK" 2>/dev/null || true
 }
 
+# Optional decision trace for diagnosing why a session did or did not speak.
+# Off unless CLAUDE_ANNOUNCE_DEBUG is set or the flag file $BASE/debug exists;
+# then appends to $BASE/debug.log. Args are only cheap strings (no subprocesses)
+# so leaving calls in place costs nothing when disabled.
+dbg() {
+    { [ -n "$CLAUDE_ANNOUNCE_DEBUG" ] || [ -e "$BASE/debug" ]; } || return 0
+    printf '%s [%s %s] %s\n' "$(date '+%H:%M:%S')" "$MODE" "$$" "$*" >> "$DEBUG_LOG" 2>/dev/null
+}
+
 # Climb the process tree to the ancestor that owns the session tty (hooks run
 # without a controlling terminal; the claude process has one, ttysNNN).
 pid=$$
@@ -157,35 +175,149 @@ for _ in 1 2 3 4 5 6 7 8; do
     { [ -z "$pid" ] || [ "$pid" = "0" ] || [ "$pid" = "1" ]; } && break
 done
 
-# True when Terminal is the frontmost app and its front window's selected tab
-# is this session's tab. Any failure (no tty, not Terminal.app, AppleScript
-# denied) reports not-focused, so announcements fail open rather than being
-# silently dropped.
+# Resolve a Python for JSON parsing (WezTerm/kitty focus checks below) and for
+# transcript extraction later. Prefer the venv python (always present after
+# setup); fall back to any python3.
+PY="$VENV_PY"
+[ -x "$PY" ] || PY="$(command -v python3)"
+
+# Frontmost application's bundle id - the dispatch key for focus detection.
+front_bundle_id() {
+    lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
+        | sed -n 's/.*"CFBundleIdentifier"="\([^"]*\)".*/\1/p'
+}
+
+# True when an AppleScript-returned tty path (/dev/ttysNNN) is this session's.
+tty_is_mine() { [ -n "$1" ] && [ "${1##*/}" = "$tty" ]; }
+
+# Per-terminal "is this session the visible/active one" checks. Each runs only
+# when its terminal is already frontmost (see is_focused), so it only decides
+# whether that terminal's active tab/pane/window is THIS session. Return 0 to
+# suppress (focused), 1 to speak; on any uncertainty they return 1 so an
+# announcement is never silently dropped.
+
+focus_terminal_app() {
+    tty_is_mine "$(osascript -e 'tell application "Terminal" to tty of selected tab of front window' 2>/dev/null)"
+}
+
+# iTerm2's AppleScript name is "iTerm" (not "iTerm2").
+focus_iterm() {
+    tty_is_mine "$(osascript -e 'tell application "iTerm" to tty of current session of current window' 2>/dev/null)"
+}
+
+# Ghostty exposes tty only on builds newer than v1.3.1; on older builds the
+# query is empty and we fall through to speak (a non-regression).
+focus_ghostty() {
+    tty_is_mine "$(osascript -e 'tell application "Ghostty" to tty of focused terminal of selected tab of front window' 2>/dev/null)"
+}
+
+# WezTerm has no AppleScript; use its CLI. The GUI-focused pane comes from
+# list-clients (focused_pane_id); map this session to its pane via $WEZTERM_PANE
+# or by matching the tty against list's tty_name.
+focus_wezterm() {
+    local bin focused mine
+    bin=$(command -v wezterm 2>/dev/null) || bin="/Applications/WezTerm.app/Contents/MacOS/wezterm"
+    { [ -x "$bin" ] && [ -n "$PY" ]; } || return 1
+    focused=$("$bin" cli list-clients --format json 2>/dev/null | "$PY" -c 'import json,sys
+d=json.load(sys.stdin); print(d[0]["focused_pane_id"] if d else "")' 2>/dev/null)
+    [ -n "$focused" ] || return 1
+    mine="$WEZTERM_PANE"
+    [ -n "$mine" ] || mine=$("$bin" cli list --format json 2>/dev/null | "$PY" -c "import json,sys
+d=json.load(sys.stdin)
+print(next((p['pane_id'] for p in d if (p.get('tty_name') or '').rsplit('/',1)[-1]=='$tty'), ''))" 2>/dev/null)
+    [ -n "$mine" ] && [ "$focused" = "$mine" ]
+}
+
+# kitty via remote control: `kitty @ ls` needs allow_remote_control enabled
+# (else it returns nothing and we speak). Match the GUI-focused window id to
+# this session's inherited KITTY_WINDOW_ID.
+focus_kitty() {
+    local bin ls
+    bin=$(command -v kitty 2>/dev/null) || bin="/Applications/kitty.app/Contents/MacOS/kitty"
+    { [ -x "$bin" ] && [ -n "$PY" ] && [ -n "$KITTY_WINDOW_ID" ]; } || return 1
+    ls=$("$bin" @ ls 2>/dev/null)
+    [ -n "$ls" ] || return 1
+    printf '%s' "$ls" | "$PY" -c "import json,sys
+d=json.load(sys.stdin)
+fid=None
+for osw in d:
+    if not osw.get('is_focused'): continue
+    for t in osw.get('tabs', []):
+        for w in t.get('windows', []):
+            if w.get('is_focused'): fid = w.get('id')
+sys.exit(0 if str(fid) == '$KITTY_WINDOW_ID' else 1)" 2>/dev/null
+}
+
+# Suppress the announcement only when the user is looking at THIS session's
+# tab/pane. Dispatch on the frontmost app; terminals with no per-session focus
+# API (Alacritty; Ghostty <= v1.3.1; kitty without remote control) fall through
+# to speak. Any failure (no tty, AppleScript denied) also speaks - announcements
+# fail open rather than being silently dropped.
 is_focused() {
     [ -n "$CLAUDE_ANNOUNCE_FORCE" ] && return 1
     [ -n "$tty" ] || return 1
-    local front active
-    front=$(lsappinfo info -only name "$(lsappinfo front 2>/dev/null)" 2>/dev/null)
-    case "$front" in
-        *'"Terminal"'*)
-            active=$(osascript -e 'tell application "Terminal" to tty of selected tab of front window' 2>/dev/null)
-            [ "${active##*/}" = "$tty" ] && return 0
-            ;;
+    case "$(front_bundle_id)" in
+        com.apple.Terminal)     focus_terminal_app ;;
+        com.googlecode.iterm2)  focus_iterm ;;
+        com.mitchellh.ghostty)  focus_ghostty ;;
+        com.github.wez.wezterm) focus_wezterm ;;
+        net.kovidgoyal.kitty)   focus_kitty ;;
+        *)                      return 1 ;;
     esac
-    return 1
 }
+
+# Canonical key for the terminal hosting THIS session, from the env the hook
+# inherits from the session shell. Empty if unrecognized. Keys match the
+# enabled-terminals file and setup.sh.
+host_terminal() {
+    # Terminal-specific vars first: they are set by the actual host terminal and
+    # beat TERM_PROGRAM, which can be inherited stale (e.g. kitty launched from a
+    # Terminal.app shell keeps TERM_PROGRAM=Apple_Terminal; kitty sets only
+    # KITTY_WINDOW_ID). Terminal.app has no distinctive var, so it relies on
+    # TERM_PROGRAM last.
+    [ -n "$KITTY_WINDOW_ID" ] && { echo kitty; return; }
+    [ -n "$WEZTERM_PANE" ] && { echo wezterm; return; }
+    { [ -n "$GHOSTTY_RESOURCES_DIR" ] || [ -n "$GHOSTTY_SURFACE_ID" ]; } && { echo ghostty; return; }
+    { [ -n "$ALACRITTY_WINDOW_ID" ] || [ -n "$ALACRITTY_SOCKET" ]; } && { echo alacritty; return; }
+    [ -n "$ITERM_SESSION_ID" ] && { echo iterm2; return; }
+    case "$TERM_PROGRAM" in
+        Apple_Terminal) echo terminal; return ;;
+        iTerm.app)      echo iterm2;   return ;;
+        WezTerm)        echo wezterm;  return ;;
+        ghostty)        echo ghostty;  return ;;
+    esac
+    case "$TERM" in
+        xterm-kitty)   echo kitty;   return ;;
+        xterm-ghostty) echo ghostty; return ;;
+    esac
+    echo ""
+}
+
+# Gate: only announce for sessions whose host terminal was enabled at install.
+# Missing file = pre-feature install, announce everywhere (backward compatible).
+# An unrecognized host is treated as not-enabled (stay silent) so the tool only
+# ever speaks where the user opted in. CLAUDE_ANNOUNCE_FORCE bypasses the gate.
+terminal_enabled() {
+    [ -n "$CLAUDE_ANNOUNCE_FORCE" ] && return 0
+    [ -f "$ENABLED_FILE" ] || return 0
+    local host; host=$(host_terminal)
+    [ -n "$host" ] && grep -qxF "$host" "$ENABLED_FILE"
+}
+
+# Do nothing in terminals the user did not enable this in.
+dbg "invoked: host='$(host_terminal)' tty='$tty'"
+terminal_enabled || { dbg "exit: terminal not in enabled list"; exit 0; }
 
 # Silent while the user is watching this tab, exactly like foot's
 # command-focused=no on Linux.
-is_focused && exit 0
+is_focused && { dbg "exit: focused (user is looking at this session)"; exit 0; }
+dbg "not focused -> will announce"
 
-# Extract the announcement material from the transcript. Prefer the venv
-# python (always present after setup); fall back to any python3.
-PY="$VENV_PY"
-[ -x "$PY" ] || PY="$(command -v python3)"
+# Extract the announcement material from the transcript (PY resolved above).
 [ -n "$PY" ] || ding
 task=$(printf '%s' "$input" | "$PY" "$EXTRACT" "$MODE" 2>/dev/null)
-[ -n "$task" ] || ding
+[ -n "$task" ] || { dbg "ding: extract produced empty task"; ding; }
+dbg "task: ${#task} chars"
 
 if [ "$MODE" = "notification" ]; then
     instruction="Claude, the user's AI coding assistant, has paused and needs the user. In ONE sentence, at most 14 words, tell the user what Claude is asking or waiting for. Present tense, plain English, no quotes, no preamble, no emojis."
@@ -206,20 +338,25 @@ $task
 
 One-sentence announcement:"
 
-summary=""
+summary=""; via=""
 if [ -x "$SUMMARIZE" ]; then
     summary=$(with_timeout 30 "$SUMMARIZE" \
         "You write one-line spoken announcements for a terminal notification system." \
         "$prompt" 2>/dev/null </dev/null | clean)
+    [ -n "$summary" ] && via="on-device"
+    dbg "on-device summarizer: ${#summary} chars"
 fi
 if [ -z "$summary" ] && command -v claude >/dev/null 2>&1; then
     summary=$(CLAUDE_ANNOUNCE_INNER=1 with_timeout 60 \
         claude -p --model haiku "$prompt" 2>/dev/null </dev/null | clean)
+    [ -n "$summary" ] && via="claude -p"
+    dbg "claude -p fallback: ${#summary} chars"
 fi
-[ -n "$summary" ] || ding
+[ -n "$summary" ] || { dbg "ding: no summary from on-device or claude -p"; ding; }
+dbg "summary via $via: [$summary]"
 
 # In a meeting, deliver the summary as a silent banner instead of speaking.
-in_meeting && banner "$summary"
+in_meeting && { dbg "delivering as banner (in meeting)"; banner "$summary"; }
 
 # Kokoro synth; if the venv or models are missing, degrade to the native say
 # voice rather than dropping the announcement.
@@ -242,8 +379,10 @@ is_focused && { rm -f "$wav"; exit 0; }
 in_meeting && { rm -f "$wav"; banner "$summary"; }
 
 if [ -s "$wav" ]; then
+    dbg "playing kokoro wav via afplay"
     with_timeout 30 afplay "$wav" >/dev/null 2>&1
 else
+    dbg "no wav (kokoro unavailable/failed) -> native say"
     with_timeout 30 say "$summary" >/dev/null 2>&1
 fi
 rm -f "$wav"
