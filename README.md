@@ -41,10 +41,16 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
    question/permission context from the session transcript. For a completed
    turn it prefers the Stop hook's authoritative `last_assistant_message`, with
    transcript text as a compatibility fallback for older Claude Code versions.
-4. Apple's on-device foundation model (Apple Intelligence, macOS 26) compresses
-   that into one spoken sentence via the compiled
-   `claude-announce-summarize` binary. If the model is unavailable, it falls
-   back to `claude -p --model haiku`.
+4. For a completed response, Apple's on-device foundation model (Apple
+   Intelligence, macOS 26) produces a constrained status, exact evidence quote,
+   and extractive topic. Local code verifies those fields against Claude's reply,
+   requires explicit completed-action language before accepting `changed`, and
+   renders the spoken sentence from a fixed template. Unsupported claims become
+   neutral "Claude worked on..." wording. The user request is excluded whenever
+   a final reply exists, so an imperative request cannot be repeated as a
+   completed action. If the model is unavailable, `claude -p --model haiku`
+   produces the same assessment and passes through the same validator.
+   Pending-input notices continue to use direct one-sentence summarization.
 5. Kokoro TTS (af_heart voice, same as the Linux setup) synthesizes the
    sentence and `afplay` speaks it. Focus is re-checked before playback, and
    playback is serialized across sessions - if two sessions finish at once the
@@ -58,8 +64,10 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
    call starts mid-generation. If the CoreAudio check is unavailable or fails,
    the tool fails open toward speaking.
 
-Every stage degrades: no summary means the plain Glass ding (a generic banner
-in a meeting), no Kokoro means the native `say` voice. The hook always exits 0,
+Every stage degrades: a failed completed-turn assessment becomes the always-true
+"Claude finished responding" notification; a missing pending-input summary uses
+the plain Glass ding (a generic banner in a meeting); no Kokoro means the native
+`say` voice. The hook always exits 0,
 so it can never fail a session, and setup wires it with `async: true`, so the
 several seconds of summarizing, synthesizing, and playback run in the background
 and never delay the next turn.
@@ -147,6 +155,7 @@ once.
 ```
 bin/claude-announce              hook entry point (stop | notification)
 bin/claude-announce-extract.py   transcript -> announcement material
+bin/claude-announce-render.py    grounded assessment -> conservative sentence
 bin/claude-announce-focus.py     WezTerm/kitty focus-response parser
 bin/claude-announce-hooks.py     settings.json wiring (wire | unwire)
 bin/claude-announce-tts.py       Kokoro synthesis (runs in the venv)
@@ -169,6 +178,8 @@ bash tests/test_lock.sh                 # audio-lock concurrency
 
 They cover the transcript extractor (turn scoping, anti-hallucination,
 authoritative final-reply fallback, slash-command, and notification logic),
+the grounded renderer (verbatim evidence, conservative status validation,
+neutral fallback, and investigation-versus-completion regressions),
 settings.json hook wiring (structural
 matching, idempotence, migration, uninstall, and atomic writes), WezTerm/kitty
 focus parsing, host-terminal precedence, direct dependency source/lock

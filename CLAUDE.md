@@ -24,11 +24,14 @@ announce the same things.
 - Summarizer is Apple's on-device foundation model (FoundationModels
   framework, macOS 26+, Apple Intelligence must be enabled), replacing Ollama.
   Fallback chain: on-device model -> `claude -p --model haiku` (guarded
-  against hook recursion via CLAUDE_ANNOUNCE_INNER) -> plain ding.
-- The full instruction goes in the prompt with a "One-sentence announcement:"
-  trailer, not in the session instructions. Tested: with the instruction in
-  `LanguageModelSession(instructions:)` the small on-device model echoes the
-  assistant reply verbatim instead of summarizing.
+  against hook recursion via CLAUDE_ANNOUNCE_INNER) -> deterministic neutral
+  sentence for Stop, or plain ding for a pending-input notice.
+- Pending-input summarization keeps the full instruction in the prompt with a
+  "One-sentence announcement:" trailer. Tested: putting that entire formatting
+  instruction in `LanguageModelSession(instructions:)` makes the small on-device
+  model echo the reply verbatim. Stop announcements instead put only the short,
+  critical no-overclaim invariant in session instructions; the prompt requests
+  a constrained status/evidence/topic assessment.
 - Compile the Swift CLI with `-parse-as-library` (single-file swiftc builds
   treat the file as main.swift, which rejects `@main`).
 - TTS is kokoro-onnx with the af_heart voice, matching Linux. Degrades to
@@ -52,6 +55,21 @@ announce the same things.
   carries a neutral "none recorded" note plus the final tool action, and the
   instruction forbids inferring outcomes from the request. The sibling Linux
   setup calls the same claude-announce-extract.py; keep the copies identical.
+- Grounded Stop announcements (2026-07-16): a Stop hook means the response
+  ended, not that the requested operation completed. When a reply exists, the
+  classifier sees ONLY that reply, never the imperative user request. The Swift
+  helper uses DynamicGenerationSchema (not @Generable macros: command-line
+  Swift SDKs may omit the macro plugin) to return status + exact evidence + an
+  extractive topic with greedy sampling. claude-announce-render.py verifies the
+  evidence/topic against the reply, requires explicit completed-action grammar
+  for `changed`, checks status-specific evidence, and renders a fixed template;
+  unsupported claims downgrade to neutral "worked on" wording. Haiku fallback
+  produces the same JSON and passes through the same validator. With no recorded
+  reply the status is forcibly neutral, and total model failure becomes the
+  always-true "Claude finished responding" rather than an invented outcome.
+  Modern hook replies are read directly from last_assistant_message and bounded
+  with a head+tail slice so long replies retain their concluding qualifications;
+  the shared extractor remains the compatibility fallback.
 - Playback is serialized (2026-07-14): two sessions finishing at once used to
   talk over each other. audio_lock/audio_unlock in bin/claude-announce hold an
   exclusive macOS lockf(1) lock on an inherited fd (`exec 9>$BASE/audio.lock`;
@@ -172,6 +190,8 @@ announce everywhere), warns to remove the entries by hand, and exits nonzero.
 Tests: `test_extract.py` exercises claude-announce-extract.py (turn scoping, the
 Stop hook's authoritative last_assistant_message with transcript fallback, the
 "none recorded" anti-hallucination path, slash commands, notification asks);
+`test_grounding.py` exercises assessment parsing, verbatim grounding,
+status-specific evidence gates, and investigation-versus-change regressions;
 `test_hooks.py` exercises claude-announce-hooks.py (structural matching including
 spaced exec paths, idempotence, legacy migration, uninstall, atomic write);
 `test_focus.py` covers WezTerm/kitty focus parsing; `test_requirements.py` guards
