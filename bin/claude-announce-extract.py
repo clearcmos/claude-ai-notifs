@@ -5,7 +5,9 @@ Reads the Claude Code hook JSON on stdin, opens the session transcript
 (JSONL) it points at, and prints the task text the summarizer should
 compress into one spoken sentence:
 
-  stop mode          last real user prompt plus Claude's final reply
+  stop mode          last real user prompt plus Claude's final reply; prefers
+                     the Stop hook's authoritative last_assistant_message and
+                     falls back to transcript text for older Claude versions
   notification mode  what Claude is blocked on: an AskUserQuestion question
                      (with its options) or a tool permission prompt
 
@@ -47,7 +49,7 @@ def load(path):
     return entries
 
 
-def stop_task(entries):
+def stop_task(entries, final_reply=""):
     # Last real user input: skip meta entries, tool results and harness noise.
     # Slash-command turns are stored as <command-name>/<command-args> tags, not
     # plain text; turn those into "Slash command: /name args" so command-only
@@ -86,30 +88,39 @@ def stop_task(entries):
         if (e.get("type") == "assistant"
                 and text_of(e.get("message", {}).get("content"))):
             last_text = i
-    reply = ""
+    transcript_reply = ""
     if last_text >= 0:
         start = last_text
         while start > 0 and entries[start - 1].get("type") == "assistant":
             start -= 1
-        reply = " ".join(
+        transcript_reply = " ".join(
             t for i in range(start, last_text + 1)
             for t in [text_of(entries[i].get("message", {}).get("content"))]
             if t)[:1800]
 
-    # Tool calls after that closing text were the turn's real last actions;
-    # name the final one so the announcement can be grounded in it. Same
-    # turn-scoping as the reply: never reach back before the prompt.
+    # Claude Code documents last_assistant_message as the authoritative final
+    # Stop reply: on some versions the transcript is not yet flushed when the
+    # hook fires. Keep transcript_reply as a compatibility fallback.
+    hook_reply = final_reply.strip() if isinstance(final_reply, str) else ""
+    reply = (hook_reply or transcript_reply)[:1800]
+
+    # In the transcript-fallback path, tool calls after its closing text were
+    # the turn's real last actions; name the final one so the announcement can
+    # be grounded in it. The authoritative hook reply is newer than any
+    # partially flushed transcript, so never mislabel an older tool as having
+    # happened after it. Same turn-scoping: never reach before the prompt.
     last_use = None
-    for e in entries[max(last_text, prompt_i) + 1:]:
-        if e.get("type") != "assistant":
-            continue
-        content = e.get("message", {}).get("content")
-        if not isinstance(content, list):
-            continue
-        uses = [b for b in content
-                if isinstance(b, dict) and b.get("type") == "tool_use"]
-        if uses:
-            last_use = uses[-1]
+    if not hook_reply:
+        for e in entries[max(last_text, prompt_i) + 1:]:
+            if e.get("type") != "assistant":
+                continue
+            content = e.get("message", {}).get("content")
+            if not isinstance(content, list):
+                continue
+            uses = [b for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if uses:
+                last_use = uses[-1]
 
     if not prompt and not reply:
         return ""
@@ -170,14 +181,15 @@ def main():
         hook = json.load(sys.stdin)
     except ValueError:
         return
+    entries = []
     path = hook.get("transcript_path")
-    if not path:
-        return
-    try:
-        entries = load(path)
-    except OSError:
-        return
-    task = notification_task(entries) if mode == "notification" else stop_task(entries)
+    if path:
+        try:
+            entries = load(path)
+        except OSError:
+            pass
+    task = (notification_task(entries) if mode == "notification"
+            else stop_task(entries, hook.get("last_assistant_message", "")))
     if task:
         sys.stdout.write(task)
 

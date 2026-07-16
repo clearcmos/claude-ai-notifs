@@ -13,7 +13,11 @@ Linux setup). Run: python -m unittest discover -s tests
 """
 
 import importlib.util
+import json
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 
 _MODULE_PATH = (
@@ -70,6 +74,32 @@ class TextOf(unittest.TestCase):
 
 
 class StopTask(unittest.TestCase):
+    def test_hook_final_reply_wins_over_stale_transcript(self):
+        task = extract.stop_task([
+            user("Run the checks"),
+            assistant_text("I am starting the checks."),
+            assistant_tool("Bash", command="pytest"),
+        ], final_reply="All checks passed.")
+        self.assertIn("All checks passed.", task)
+        self.assertNotIn("I am starting the checks.", task)
+        self.assertNotIn("final action", task)
+
+    def test_hook_final_reply_works_before_transcript_flush(self):
+        task = extract.stop_task(
+            [user("Explain the failure")],
+            final_reply="The lock file was stale.",
+        )
+        self.assertIn("Explain the failure", task)
+        self.assertIn("The lock file was stale.", task)
+        self.assertNotIn("none recorded", task)
+
+    def test_invalid_hook_reply_falls_back_to_transcript(self):
+        task = extract.stop_task([
+            user("Inspect it"),
+            assistant_text("The configuration is valid."),
+        ], final_reply={"unexpected": "shape"})
+        self.assertIn("The configuration is valid.", task)
+
     def test_prompt_and_reply(self):
         task = extract.stop_task([
             user("Fix the parser bug"),
@@ -141,6 +171,41 @@ class StopTask(unittest.TestCase):
 
     def test_tool_only_no_user_returns_empty(self):
         self.assertEqual(extract.stop_task([assistant_tool("Bash", command="x")]), "")
+
+
+class CommandLine(unittest.TestCase):
+    def test_stop_can_use_hook_reply_without_a_transcript(self):
+        result = subprocess.run(
+            [sys.executable, str(_MODULE_PATH), "stop"],
+            input=json.dumps({"last_assistant_message": "The answer is 42."}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("The answer is 42.", result.stdout)
+
+    def test_stop_uses_hook_reply_when_transcript_is_not_flushed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = pathlib.Path(directory) / "session.jsonl"
+            transcript.write_text(
+                json.dumps(user("Check the release")) + "\n",
+                encoding="utf-8",
+            )
+            hook = {
+                "transcript_path": str(transcript),
+                "last_assistant_message": "The release is ready.",
+            }
+            result = subprocess.run(
+                [sys.executable, str(_MODULE_PATH), "stop"],
+                input=json.dumps(hook),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Check the release", result.stdout)
+        self.assertIn("The release is ready.", result.stdout)
 
 
 class NotificationTask(unittest.TestCase):

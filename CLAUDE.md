@@ -170,6 +170,7 @@ hooks still point into the repo, and a missing enabled-terminals would make it
 announce everywhere), warns to remove the entries by hand, and exits nonzero.
 
 Tests: `test_extract.py` exercises claude-announce-extract.py (turn scoping, the
+Stop hook's authoritative last_assistant_message with transcript fallback, the
 "none recorded" anti-hallucination path, slash commands, notification asks);
 `test_hooks.py` exercises claude-announce-hooks.py (structural matching including
 spaced exec paths, idempotence, legacy migration, uninstall, atomic write);

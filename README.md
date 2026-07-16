@@ -3,8 +3,8 @@
 Spoken AI notifications for Claude Code sessions in supported macOS terminals.
 When a Claude session finishes a turn or needs your input or permission while
 you are looking at another tab, window, or app, a synthesized voice tells you
-what happened ("Claude fixed the failing auth tests, all 47 now pass") instead
-of a plain ding.
+what happened ("Claude fixed the failing authentication tests and verified the
+suite") instead of a plain ding.
 
 At install you pick which of your installed terminals it runs in (see the
 support matrix below); it stays silent in the rest.
@@ -37,9 +37,10 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
    the visible tab/pane. If you are looking at it, nothing plays. If exact
    session focus cannot be determined, it speaks rather than risk dropping an
    announcement.
-3. `bin/claude-announce-extract.py` pulls the last user prompt and Claude's
-   final reply (or the pending question/permission ask) out of the session
-   transcript.
+3. `bin/claude-announce-extract.py` pulls the last user prompt and pending
+   question/permission context from the session transcript. For a completed
+   turn it prefers the Stop hook's authoritative `last_assistant_message`, with
+   transcript text as a compatibility fallback for older Claude Code versions.
 4. Apple's on-device foundation model (Apple Intelligence, macOS 26) compresses
    that into one spoken sentence via the compiled
    `claude-announce-summarize` binary. If the model is unavailable, it falls
@@ -167,7 +168,8 @@ bash tests/test_lock.sh                 # audio-lock concurrency
 ```
 
 They cover the transcript extractor (turn scoping, anti-hallucination,
-slash-command, and notification logic), settings.json hook wiring (structural
+authoritative final-reply fallback, slash-command, and notification logic),
+settings.json hook wiring (structural
 matching, idempotence, migration, uninstall, and atomic writes), WezTerm/kitty
 focus parsing, host-terminal precedence, direct dependency source/lock
 consistency, private TTS output, and audio-lock serialization and kill-release
