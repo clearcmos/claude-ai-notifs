@@ -53,7 +53,9 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
    topic but can never prove its own completion. Unsupported claims become
    neutral "Claude worked on..." wording. If the model is unavailable,
    `claude -p --model haiku` produces the same assessment and passes through the
-   same validator.
+   same validator. Waiting/dependency replies and state recaps have distinct
+   statuses, so a vague latest prompt can still produce a useful announcement
+   grounded in concrete names, systems, or artifacts from the reply.
    Pending-input notices continue to use direct one-sentence summarization.
 5. Kokoro TTS (af_heart voice, same as the Linux setup) synthesizes the
    sentence and `afplay` speaks it. Focus is re-checked before playback, and

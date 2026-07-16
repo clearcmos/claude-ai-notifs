@@ -229,6 +229,69 @@ class GroundedRendering(unittest.TestCase):
             "Claude produced the requested content.",
         )
 
+    def test_vague_request_can_use_reply_topic_for_waiting(self):
+        source = (
+            "Sounds good. Nothing to do until the reviewer acts. "
+            "Ping me tomorrow when there's movement."
+        )
+        value = assessment(
+            "waiting",
+            "Nothing to do until the reviewer acts",
+            "the reviewer",
+        )
+        self.assertEqual(
+            render.render(
+                source,
+                value,
+                topic_source="I will wait until tomorrow to see",
+            ),
+            "Claude is waiting on the reviewer.",
+        )
+
+    def test_state_summary_is_rendered_as_recap(self):
+        source = "Current state: deployment is paused and testing remains open."
+        value = assessment("recapped", "Current state", "deployment")
+        self.assertEqual(
+            render.render(source, value, topic_source="okay"),
+            "Claude recapped deployment.",
+        )
+
+    def test_generic_waiting_topic_uses_status_specific_fallback(self):
+        source = "The request is waiting for external approval."
+        value = assessment("waiting", "waiting for external approval", "request")
+        self.assertEqual(
+            render.render(source, value, topic_source="I'll wait"),
+            "Claude is waiting for the next step.",
+        )
+
+    def test_waiting_requires_dependency_evidence(self):
+        source = "The cursor blinks, a patient friend."
+        value = assessment("waiting", "The cursor blinks", "poem")
+        self.assertEqual(
+            render.render(source, value, topic_source="write a poem"),
+            "Claude worked on poem.",
+        )
+
+    def test_negated_waiting_is_not_accepted(self):
+        source = "The deployment is no longer waiting on approval."
+        value = assessment(
+            "waiting",
+            "no longer waiting on approval",
+            "deployment",
+        )
+        self.assertEqual(
+            render.render(source, value),
+            "Claude worked on deployment.",
+        )
+
+    def test_generic_recap_topic_uses_status_specific_fallback(self):
+        source = "Here is a recap of the current task."
+        value = assessment("recapped", "Here is a recap", "task")
+        self.assertEqual(
+            render.render(source, value, topic_source="thanks"),
+            "Claude recapped the current state.",
+        )
+
     def test_force_neutral_overrides_supported_change(self):
         source = "Grant Maya access to Okta"
         value = assessment("changed", "Grant Maya access", "Maya access to Okta")

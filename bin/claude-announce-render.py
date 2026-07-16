@@ -20,6 +20,8 @@ STATUSES = {
     "produced",
     "proposed",
     "verified",
+    "waiting",
+    "recapped",
     "blocked",
     "failed",
     "unknown",
@@ -80,6 +82,11 @@ _STATUS_EVIDENCE = {
         r"\b(?:could not|couldn't|error|fail(?:ed|ure)?|problem|unable|unsuccessful)\b",
         re.IGNORECASE,
     ),
+    "waiting": re.compile(
+        r"\b(?:await(?:ed|ing)?|depend(?:s|ed|ing)?|pending|until|"
+        r"wait(?:ed|ing)?|when|once)\b",
+        re.IGNORECASE,
+    ),
 }
 _NEGATED_STATUS_ACTION = re.compile(
     r"\b(?:could not|couldn't|did not|didn't|failed to|never|not|unable to)\s+"
@@ -95,6 +102,10 @@ _NOT_BLOCKED = re.compile(r"\b(?:not|never|no longer) blocked\b|\bunblocked\b",
 _NOT_FAILED = re.compile(
     r"\b(?:no|without) (?:errors?|failures?|problems?)\b|"
     r"\b(?:did not|didn't|never) fail(?:ed)?\b|\b(?:succeeded|successful)\b",
+    re.IGNORECASE,
+)
+_NOT_WAITING = re.compile(
+    r"\b(?:not|no longer) (?:awaiting|pending|waiting)\b|\bdoes not depend\b",
     re.IGNORECASE,
 )
 
@@ -190,6 +201,9 @@ def reply_from_hook(raw, limit=2600):
 def safe_topic(sources, candidate):
     """Return a short extractive topic or a deterministic generic fallback."""
     candidate = normalize(candidate).strip(" \t\r\n\"'`.,:;!?-–—")
+    generic = re.sub(r"^(?:a|an|the)\s+", "", candidate.casefold())
+    if generic in {"issue", "reply", "request", "response", "task", "work"}:
+        return "the request"
     if isinstance(sources, str):
         sources = (sources,)
     if not any(
@@ -216,7 +230,15 @@ def supported_change(evidence):
 def supported_status(status, evidence):
     if status == "changed":
         return supported_change(evidence)
-    if status in {"investigated", "answered", "produced", "proposed", "verified"}:
+    if status == "waiting":
+        return bool(
+            _STATUS_EVIDENCE["waiting"].search(evidence)
+            and not _NOT_WAITING.search(evidence)
+        )
+    if status in {
+        "investigated", "answered", "produced", "proposed", "verified",
+        "recapped",
+    }:
         # These do not assert that the user's requested mutation happened. Let
         # the constrained classifier distinguish them as long as its evidence
         # is grounded and does not explicitly negate the classified action.
@@ -256,12 +278,18 @@ def render(source, assessment, force_neutral=False, topic_source=None):
         "produced": "Claude created the requested {topic}.",
         "proposed": "Claude proposed next steps for {topic}.",
         "verified": "Claude verified {topic}.",
+        "waiting": "Claude is waiting on {topic}.",
+        "recapped": "Claude recapped {topic}.",
         "blocked": "Claude was blocked on {topic}.",
         "failed": "Claude encountered a problem with {topic}.",
         "unknown": "Claude worked on {topic}.",
     }
     if status == "produced" and topic == "the request":
         return "Claude produced the requested content."
+    if status == "waiting" and topic == "the request":
+        return "Claude is waiting for the next step."
+    if status == "recapped" and topic == "the request":
+        return "Claude recapped the current state."
     return templates[status].format(topic=topic)
 
 

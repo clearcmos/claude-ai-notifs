@@ -28,7 +28,7 @@ func makeAssessmentSchema() throws -> GenerationSchema {
         description: "The narrowest status explicitly supported by the report",
         anyOf: [
             "changed", "investigated", "answered", "produced", "proposed",
-            "verified", "blocked", "failed", "unknown",
+            "verified", "waiting", "recapped", "blocked", "failed", "unknown",
         ]
     )
     let assessment = DynamicGenerationSchema(
@@ -43,7 +43,7 @@ func makeAssessmentSchema() throws -> GenerationSchema {
             .init(name: "status", schema: status),
             .init(
                 name: "topic",
-                description: "Exact one-to-eight-word noun phrase from the latest request or report; no outcome verb",
+                description: "Central concrete one-to-eight-word topic from the latest request or report; no generic topic or outcome verb",
                 schema: text
             ),
         ]

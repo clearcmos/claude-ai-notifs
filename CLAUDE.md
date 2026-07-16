@@ -69,7 +69,12 @@ announce the same things.
   negations, and renders a fixed template;
   unsupported claims downgrade to neutral "worked on" wording. Requested
   generated or rewritten content uses the separate `produced` status so a poem
-  is not mislabeled as an explanation. Haiku fallback
+  is not mislabeled as an explanation. `waiting` covers progress dependent on
+  a future event/person/action, and `recapped` covers state/open-item summaries;
+  their topics prefer concrete names, systems, projects, artifacts, or
+  identifiers from the reply when the latest request is vague. Generic model
+  topics (`request`, `task`, `issue`, `work`, `response`, `reply`) use truthful
+  status-specific fallbacks instead. Haiku fallback
   produces the same JSON and passes through the same validator. With no recorded
   reply the status is forcibly neutral, and total model failure becomes the
   always-true "Claude finished responding" rather than an invented outcome.
