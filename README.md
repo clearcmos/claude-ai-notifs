@@ -185,6 +185,7 @@ block added to your `kitty.conf` is left in place; remove it manually if you
 want.
 
 If `settings.json` is not valid JSON (or `python3` is unavailable), uninstall
-cannot edit it safely: it still removes the runtime directory but prints a
-warning telling you to delete the `claude-announce` hook entries by hand, rather
-than reporting a clean uninstall it did not perform.
+cannot edit it safely. Rather than report a clean uninstall it did not perform,
+it leaves both the runtime directory and this repo in place (the live hooks
+still point into the repo), warns you to delete the `claude-announce` entries
+under `hooks.Stop`/`hooks.Notification` by hand, and exits nonzero.
