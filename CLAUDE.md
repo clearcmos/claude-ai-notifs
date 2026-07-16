@@ -134,8 +134,13 @@ Supply chain: the venv installs from the hash-locked `requirements.lock`
 (`--require-hashes`: full transitive tree, SHA-256 per artifact), generated from
 the human-edited `requirements.txt` via
 `uv pip compile requirements.txt --generate-hashes --universal` (universal so it
-spans the supported Python range on both install paths). After editing a pin in
-requirements.txt, regenerate the lock and re-test. Separately, each Kokoro model
+spans the supported Python range on both install paths). The lock's numpy 2.5.1
+requires Python >=3.12, so 3.12 is the hard floor (3.12-3.14 tested): setup
+detects >=3.12, and recreates a leftover venv built on an older Python before
+installing (else the --require-hashes install fails on numpy). CI has a
+macOS-only step that builds a venv, installs the lock with --require-hashes, and
+imports the runtime deps, so a lock/floor mismatch is caught. After editing a pin
+in requirements.txt, regenerate the lock and re-test. Separately, each Kokoro model
 file is SHA-256-verified against the canonical release hash before use -
 present-but-wrong or truncated files are re-downloaded, and a post-download
 mismatch aborts. Those hashes are hard-coded in setup.sh's `model_sha256`; if the

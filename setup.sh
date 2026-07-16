@@ -12,7 +12,7 @@
 #                           itself can be deleted afterwards
 #
 # What it does:
-#   1. Checks prerequisites (Apple Silicon, macOS 26, Xcode CLT, Python 3.10+).
+#   1. Checks prerequisites (Apple Silicon, macOS 26, Xcode CLT, Python 3.12+).
 #   2. Creates the Kokoro TTS venv and downloads the model files (~340 MB)
 #      into ~/.local/share/claude-ai-notifs.
 #   3. Compiles the Apple Foundation Models summarizer with swiftc and reports
@@ -280,21 +280,22 @@ esac
 
 xcode-select -p >/dev/null 2>&1 || die "Xcode Command Line Tools missing: run  xcode-select --install"
 
-# Python 3.10+ for the Kokoro venv. Prefer uv (it can fetch a pinned Python),
-# then a versioned brew python, then plain python3.
+# Python 3.12+ for the Kokoro venv (requirements.lock pins numpy 2.5.1, which
+# requires >=3.12; 3.12 and 3.13 are both tested). Prefer uv (it can fetch a
+# pinned Python), then a versioned brew python, then plain python3.
 PYTHON=""
 USE_UV=""
 if command -v uv >/dev/null 2>&1; then
     USE_UV=1
 else
-    for cand in python3.12 python3.13 python3.11 python3; do
+    for cand in python3.12 python3.13 python3; do
         if command -v "$cand" >/dev/null 2>&1 \
-           && "$cand" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null; then
+           && "$cand" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 12) else 1)' 2>/dev/null; then
             PYTHON="$cand"
             break
         fi
     done
-    [ -n "$PYTHON" ] || die "no Python 3.10+ found: run  brew install python@3.12  (or install uv)"
+    [ -n "$PYTHON" ] || die "no Python 3.12+ found: run  brew install python@3.12  (or install uv)"
 fi
 
 # 2. Kokoro TTS venv + models ------------------------------------------------
@@ -302,10 +303,18 @@ fi
 mkdir -p "$BASE/bin"
 cd "$BASE"
 
-PIP_HINT="could not install kokoro-onnx/soundfile. Most common cause: the
-Python used is too new or too old for prebuilt onnxruntime wheels. Install
-Python 3.12 (brew install python@3.12), delete $BASE/venv, and re-run."
+PIP_HINT="could not install the hash-locked dependencies. Most common cause: the
+venv Python is older than 3.12 (requirements.lock pins numpy 2.5.1, which needs
+>=3.12). Install Python 3.12 (brew install python@3.12), delete $BASE/venv, and
+re-run."
 
+# Recreate a venv left by an older install if its Python predates the lock's
+# 3.12 floor; otherwise the --require-hashes install below fails on numpy.
+if [ -x venv/bin/python ] \
+   && ! venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 12) else 1)' 2>/dev/null; then
+    info "existing venv uses Python < 3.12; recreating it"
+    rm -rf venv
+fi
 if [ ! -x venv/bin/python ]; then
     info "creating venv"
     if [ -n "$USE_UV" ]; then
