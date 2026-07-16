@@ -37,6 +37,13 @@ jobs:
           bash -n bin/claude-announce
           bash -n tests/test_lock.sh
 
+      # ShellCheck analysis is platform-independent, so run it once on Linux
+      # (preinstalled on the runner). Intentional findings are suppressed inline
+      # with a rationale; anything else fails the build.
+      - name: ShellCheck
+        if: runner.os == 'Linux'
+        run: shellcheck setup.sh bin/claude-announce tests/test_lock.sh
+
       - name: Python compiles
         run: |
           python -m py_compile \
