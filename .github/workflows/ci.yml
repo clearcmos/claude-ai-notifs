@@ -56,3 +56,14 @@ jobs:
 
       - name: Audio-lock concurrency (self-skips without lockf)
         run: bash tests/test_lock.sh
+
+      # Regression-test the hash-locked install on the supported platform (macOS):
+      # build a venv with the runner's Python 3.12 (the lock's floor), install
+      # with --require-hashes, and import the runtime deps. Catches a lock/Python
+      # mismatch like numpy 2.5.1 requiring >=3.12.
+      - name: Hash-locked install + import (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m venv /tmp/lockvenv
+          /tmp/lockvenv/bin/pip install --quiet --require-hashes -r requirements.lock
+          /tmp/lockvenv/bin/python -c "import kokoro_onnx, soundfile; print('lock install + import OK')"
