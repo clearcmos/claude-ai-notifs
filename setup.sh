@@ -12,7 +12,8 @@
 #                           itself can be deleted afterwards
 #
 # What it does:
-#   1. Checks prerequisites (Apple Silicon, macOS 26, Xcode CLT, Python 3.12+).
+#   1. Checks prerequisites (Apple Silicon, Xcode CLT, Python 3.12+) and reports
+#      whether macOS 26's optional on-device summarizer is available.
 #   2. Creates the Kokoro TTS venv and downloads the model files (~340 MB)
 #      into ~/.local/share/claude-ai-notifs.
 #   3. Compiles the Apple Foundation Models summarizer with swiftc and reports
@@ -30,6 +31,7 @@
 # Everything else (say, afplay, osascript, curl) ships with macOS.
 
 set -euo pipefail
+umask 077
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
@@ -56,7 +58,10 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # Is a terminal (by bundle id) installed? Spotlight first, then well-known paths
 # (Spotlight can be disabled or slow to index a fresh install).
 terminal_installed() {
-    mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null | grep -q . && return 0
+    # sed reads the full stream: grep -q can close after its first match,
+    # SIGPIPE mdfind, and turn a real match into failure under pipefail.
+    [ -n "$(mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null | sed -n '1p')" ] \
+        && return 0
     case "$1" in
         com.apple.Terminal)       [ -d "/System/Applications/Utilities/Terminal.app" ] ;;
         com.googlecode.iterm2)    [ -d "/Applications/iTerm.app" ] ;;
@@ -301,6 +306,7 @@ fi
 # 2. Kokoro TTS venv + models ------------------------------------------------
 
 mkdir -p "$BASE/bin"
+chmod 700 "$BASE" "$BASE/bin"
 cd "$BASE"
 
 PIP_HINT="could not install the hash-locked dependencies. Most common cause: the

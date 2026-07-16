@@ -141,6 +141,19 @@ class Unwire(unittest.TestCase):
 
 
 class WriteAtomic(unittest.TestCase):
+    def test_failed_write_removes_random_temp(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            with self.assertRaises(TypeError):
+                hooks.write_atomic(path, {"not_json": object()})
+            self.assertEqual(os.listdir(d), [])
+
+    def test_new_file_defaults_to_private_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            hooks.write_atomic(path, {"hooks": {}})
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
     def test_writes_valid_json_and_preserves_mode(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "settings.json")

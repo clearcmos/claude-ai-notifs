@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 
 NOTIFICATION_MATCHER = "permission_prompt|agent_needs_input|elicitation_dialog"
@@ -103,16 +104,26 @@ def unwire(settings):
 
 def write_atomic(path, settings):
     """Write via a temp sibling + os.replace so a crash mid-write can never
-    truncate settings.json; carry the original file mode over."""
-    tmp = path + ".tmp." + str(os.getpid())
-    with open(tmp, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+    truncate settings.json; carry the original file mode over. mkstemp makes
+    the sibling unpredictable and 0600 even outside setup.sh's private umask."""
+    directory = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + ".tmp."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, text=True)
     try:
-        os.chmod(tmp, os.stat(path).st_mode)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        with os.fdopen(fd, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        try:
+            os.chmod(tmp, os.stat(path).st_mode)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _backup(path):

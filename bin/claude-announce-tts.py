@@ -21,6 +21,9 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(2)
     text, out = sys.argv[1], sys.argv[2]
+    # Spoken summaries can contain transcript-derived information. Enforce a
+    # private mode even when this helper is invoked outside the hook's umask.
+    os.umask(0o077)
 
     base = os.path.expanduser("~/.local/share/claude-ai-notifs")
     kokoro = Kokoro(

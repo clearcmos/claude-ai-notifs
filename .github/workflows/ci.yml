@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Run on both Linux and macOS. macOS is the production target (system bash is
   # 3.2 with BSD coreutils and lockf), so it exercises the scripts on the shell
@@ -24,8 +28,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -36,22 +43,31 @@ jobs:
           bash -n setup.sh
           bash -n bin/claude-announce
           bash -n tests/test_lock.sh
+          bash -n tests/test_terminal.sh
+          bash -n tests/test_temp.sh
 
       # ShellCheck analysis is platform-independent, so run it once on Linux
       # (preinstalled on the runner). Intentional findings are suppressed inline
       # with a rationale; anything else fails the build.
       - name: ShellCheck
         if: runner.os == 'Linux'
-        run: shellcheck setup.sh bin/claude-announce tests/test_lock.sh
+        run: |
+          shellcheck \
+            setup.sh \
+            bin/claude-announce \
+            tests/test_lock.sh \
+            tests/test_terminal.sh \
+            tests/test_temp.sh
 
       - name: Python compiles
         run: |
           python -m py_compile \
             bin/claude-announce-extract.py \
+            bin/claude-announce-focus.py \
             bin/claude-announce-hooks.py \
             bin/claude-announce-tts.py
 
-      - name: Swift builds (macOS)
+      - name: Swift builds + diagnostics (macOS)
         if: runner.os == 'macOS'
         run: |
           swiftc -O -parse-as-library \
@@ -61,11 +77,29 @@ jobs:
             src/claude-announce-miccheck.swift \
             -o "$RUNNER_TEMP/claude-announce-miccheck"
 
+          summary_rc=0
+          summary_out=$("$RUNNER_TEMP/claude-announce-summarize" --check 2>&1) \
+            || summary_rc=$?
+          case "$summary_rc:$summary_out" in
+            0:AVAILABLE|4:UNAVAILABLE:*) ;;
+            *) echo "unexpected summarizer check: rc=$summary_rc output=$summary_out"; exit 1 ;;
+          esac
+
+          mic_rc=0
+          mic_out=$("$RUNNER_TEMP/claude-announce-miccheck" 2>&1) || mic_rc=$?
+          case "$mic_rc:$mic_out" in
+            0:BUSY*|1:IDLE) ;;
+            *) echo "unexpected miccheck: rc=$mic_rc output=$mic_out"; exit 1 ;;
+          esac
+
       - name: Unit tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
-      - name: Audio-lock concurrency (self-skips without lockf)
-        run: bash tests/test_lock.sh
+      - name: Runtime shell tests
+        run: |
+          bash tests/test_terminal.sh
+          bash tests/test_temp.sh
+          bash tests/test_lock.sh
 
       # Regression-test the hash-locked install on the supported platform (macOS):
       # build a venv with the runner's Python 3.12 (the lock's floor), install

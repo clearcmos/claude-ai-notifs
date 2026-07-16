@@ -1,8 +1,8 @@
 version: 2
 
-# Python updates remain manual: requirements.lock is generated from
-# requirements.txt with uv pip compile, while CI validates the lock itself but
-# does not verify that it is current with the source requirements.
+# Python updates remain manual because requirements.lock is generated from
+# requirements.txt with uv pip compile. CI rejects direct-pin drift, but an
+# automated bump cannot regenerate this custom hash-lock workflow.
 updates:
   - package-ecosystem: github-actions
     directory: /

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Claude Code Stop + Notification hook: spoken announcements for macOS
-# Terminal.app. Port of a sibling Linux setup's claude-announce, with its
-# foot-terminal bell plumbing replaced by a direct AppleScript focus check.
+# Claude Code Stop + Notification hook: spoken announcements for supported
+# macOS terminals. Port of a sibling Linux setup's claude-announce, with its
+# foot-terminal bell plumbing replaced by per-terminal focus queries.
 #
 # Modes (first argument):
 #   stop (default)  announce the task that just finished
@@ -10,25 +10,24 @@
 #                   notification_type=permission_prompt; the pending tool_use
 #                   in the transcript tells them apart)
 #
-# Pipeline: check whether the user is looking at this session's Terminal tab
-# (frontmost app is Terminal AND the front window's selected tab owns this
-# session's tty). If focused, exit silently. Otherwise: read the hook JSON on
-# stdin, pull the last real user prompt plus Claude's final reply out of the
-# transcript (claude-announce-extract.py), compress them into one short spoken
-# sentence with Apple's on-device foundation model (claude-announce-summarize,
-# falling back to `claude -p --model haiku`), synthesize with Kokoro TTS
-# (af_heart voice, same as the Linux setup) and play it with afplay. Focus is
-# re-checked right before playback since generation takes a few seconds.
+# Pipeline: where the host terminal supports it, check whether this session's
+# tab/pane is the one being viewed and exit silently if so. Otherwise: read the
+# hook JSON on stdin, pull the last real user prompt plus Claude's final reply
+# out of the transcript (claude-announce-extract.py), compress them into one
+# short spoken sentence with Apple's on-device foundation model
+# (claude-announce-summarize, falling back to `claude -p --model haiku`),
+# synthesize with Kokoro TTS (af_heart voice, same as the Linux setup), and play
+# it with afplay. Focus is re-checked before playback.
 #
 # Meetings: when any process is capturing the microphone (Zoom, Google Meet,
 # Teams, Webex, Slack huddles... - claude-announce-miccheck, CoreAudio), the
-# voice is swapped for a silent macOS banner notification carrying the same
-# summary, so calls are never talked over but nothing is missed. Mic state is
+# voice is swapped for a silent macOS banner carrying the same summary. A
+# missing/failing detector deliberately falls through to voice. Mic state is
 # re-checked before playback too, in case a call started mid-generation.
 #
-# Unlike Linux, no terminal fork is needed: foot owned the focus logic there
-# (its [bell] command only ran for unfocused tabs), while Terminal.app exposes
-# tab focus over AppleScript so the hook decides by itself.
+# Unlike Linux, no terminal fork is needed: foot owned the focus logic there;
+# here the hook queries each focus-capable terminal through AppleScript or its
+# CLI and fails open toward speaking when exact focus is unavailable.
 #
 # Every stage fails toward something audible (Kokoro -> say -> plain ding) and
 # the script always exits 0 so it can never block a session.
@@ -46,10 +45,16 @@
 #   ~/.local/share/claude-ai-notifs/kokoro-v1.0.onnx
 #   ~/.local/share/claude-ai-notifs/voices-v1.0.bin
 #   ~/.local/share/claude-ai-notifs/bin/claude-announce-summarize
+#   ~/.local/share/claude-ai-notifs/bin/claude-announce-miccheck
 #   ~/.local/share/claude-ai-notifs/enabled-terminals            picked terminals
 #
 # Wired into ~/.claude/settings.json (hooks.Stop and hooks.Notification) by
 # setup.sh, by absolute path.
+
+# Runtime files can contain transcript-derived summaries. Keep newly created
+# logs, locks, and audio private even when invoked from a shell with a loose
+# default umask (notably SSH sessions).
+umask 077
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
@@ -57,6 +62,7 @@ VENV_PY="$BASE/venv/bin/python"
 SUMMARIZE="$BASE/bin/claude-announce-summarize"
 MICCHECK="$BASE/bin/claude-announce-miccheck"
 EXTRACT="$REPO/bin/claude-announce-extract.py"
+FOCUS="$REPO/bin/claude-announce-focus.py"
 TTS="$REPO/bin/claude-announce-tts.py"
 DING="/System/Library/Sounds/Glass.aiff"
 # Terminals the user enabled at install (one canonical key per line, written by
@@ -158,6 +164,7 @@ audio_unlock() {
 # so leaving calls in place costs nothing when disabled.
 dbg() {
     { [ -n "$CLAUDE_ANNOUNCE_DEBUG" ] || [ -e "$BASE/debug" ]; } || return 0
+    [ -e "$DEBUG_LOG" ] && chmod 600 "$DEBUG_LOG" 2>/dev/null
     printf '%s [%s %s] %s\n' "$(date '+%H:%M:%S')" "$MODE" "$$" "$*" >> "$DEBUG_LOG" 2>/dev/null
 }
 
@@ -217,13 +224,12 @@ focus_wezterm() {
     local bin focused mine
     bin=$(command -v wezterm 2>/dev/null) || bin="/Applications/WezTerm.app/Contents/MacOS/wezterm"
     { [ -x "$bin" ] && [ -n "$PY" ]; } || return 1
-    focused=$("$bin" cli list-clients --format json 2>/dev/null | "$PY" -c 'import json,sys
-d=json.load(sys.stdin); print(d[0]["focused_pane_id"] if d else "")' 2>/dev/null)
+    focused=$("$bin" cli list-clients --format json 2>/dev/null \
+        | "$PY" "$FOCUS" wezterm-focused 2>/dev/null)
     [ -n "$focused" ] || return 1
     mine="$WEZTERM_PANE"
-    [ -n "$mine" ] || mine=$("$bin" cli list --format json 2>/dev/null | "$PY" -c "import json,sys
-d=json.load(sys.stdin)
-print(next((p['pane_id'] for p in d if (p.get('tty_name') or '').rsplit('/',1)[-1]=='$tty'), ''))" 2>/dev/null)
+    [ -n "$mine" ] || mine=$("$bin" cli list --format json 2>/dev/null \
+        | "$PY" "$FOCUS" wezterm-pane "$tty" 2>/dev/null)
     [ -n "$mine" ] && [ "$focused" = "$mine" ]
 }
 
@@ -236,15 +242,7 @@ focus_kitty() {
     { [ -x "$bin" ] && [ -n "$PY" ] && [ -n "$KITTY_WINDOW_ID" ]; } || return 1
     ls=$("$bin" @ ls 2>/dev/null)
     [ -n "$ls" ] || return 1
-    printf '%s' "$ls" | "$PY" -c "import json,sys
-d=json.load(sys.stdin)
-fid=None
-for osw in d:
-    if not osw.get('is_focused'): continue
-    for t in osw.get('tabs', []):
-        for w in t.get('windows', []):
-            if w.get('is_focused'): fid = w.get('id')
-sys.exit(0 if str(fid) == '$KITTY_WINDOW_ID' else 1)" 2>/dev/null
+    printf '%s' "$ls" | "$PY" "$FOCUS" kitty-focused "$KITTY_WINDOW_ID" 2>/dev/null
 }
 
 # Suppress the announcement only when the user is looking at THIS session's
@@ -359,23 +357,31 @@ in_meeting && { dbg "delivering as banner (in meeting)"; banner "$summary"; }
 
 # Kokoro synth; if the venv or models are missing, degrade to the native say
 # voice rather than dropping the announcement.
-wav="${TMPDIR:-/tmp}/claude-announce-$$.wav"
-if [ -x "$VENV_PY" ]; then
+make_wav_temp() {
+    wav_dir=$(mktemp -d "${TMPDIR:-/tmp}/claude-announce.XXXXXX" 2>/dev/null) \
+        || { wav_dir=""; wav=""; return 1; }
+    wav="$wav_dir/announcement.wav"
+}
+cleanup_wav() { [ -z "$wav_dir" ] || rm -rf "$wav_dir"; }
+wav_dir=""; wav=""
+make_wav_temp || true
+trap 'cleanup_wav' EXIT
+if [ -n "$wav" ] && [ -x "$VENV_PY" ]; then
     with_timeout 45 "$VENV_PY" "$TTS" "$summary" "$wav" >/dev/null 2>&1
 fi
 
 # Generation took a few seconds: if the user switched to this tab meanwhile
 # stay silent, and if a call started meanwhile use the banner.
-is_focused && { rm -f "$wav"; exit 0; }
-in_meeting && { rm -f "$wav"; banner "$summary"; }
+is_focused && { cleanup_wav; exit 0; }
+in_meeting && { cleanup_wav; banner "$summary"; }
 
 # Serialize playback: wait our turn so concurrent announcements queue rather
 # than overlap. Re-check focus/meeting once we hold the channel, since we may
 # have waited behind another announcement and the state can change meanwhile.
 audio_lock
-trap 'audio_unlock' EXIT
-is_focused && { rm -f "$wav"; exit 0; }
-in_meeting && { rm -f "$wav"; banner "$summary"; }
+trap 'audio_unlock; cleanup_wav' EXIT
+is_focused && { cleanup_wav; exit 0; }
+in_meeting && { cleanup_wav; banner "$summary"; }
 
 if [ -s "$wav" ]; then
     dbg "playing kokoro wav via afplay"
@@ -384,5 +390,5 @@ else
     dbg "no wav (kokoro unavailable/failed) -> native say"
     with_timeout 30 say "$summary" >/dev/null 2>&1
 fi
-rm -f "$wav"
+cleanup_wav
 exit 0

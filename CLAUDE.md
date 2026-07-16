@@ -18,8 +18,9 @@ announce the same things.
 
 - No terminal fork on macOS. foot owned focus logic on Linux (bell command
   only ran for unfocused tabs); here the hook climbs the process tree to the
-  session tty and asks Terminal.app directly via AppleScript, checking focus
-  twice: before doing any work and again right before playback.
+  session tty and queries the frontmost supported terminal via AppleScript or
+  its CLI, checking focus before doing work, before playback, and again after
+  acquiring the audio lock.
 - Summarizer is Apple's on-device foundation model (FoundationModels
   framework, macOS 26+, Apple Intelligence must be enabled), replacing Ollama.
   Fallback chain: on-device model -> `claude -p --model haiku` (guarded
@@ -80,9 +81,19 @@ announce the same things.
   WezTerm via `wezterm cli list-clients` (focused_pane_id) matched to the pane
   from `wezterm cli list` (tty_name) or $WEZTERM_PANE; kitty via `kitty @ ls`
   (focused window id vs the inherited $KITTY_WINDOW_ID), which needs
-  allow_remote_control. Alacritty has no per-session API (verified: no sdef, IPC
-  is create-window/config/get-config only) so it always speaks. Every branch
-  fails open (speak) on any uncertainty - announcements are never dropped.
+  allow_remote_control. Their JSON responses are parsed by the stdlib-only
+  claude-announce-focus.py so the behavior is fixture-testable. Alacritty has
+  no per-session API (verified: no sdef, IPC is create-window/config/get-config
+  only) so it always speaks. Every branch fails open (speak) on any uncertainty
+  - announcements are never dropped.
+- Runtime privacy: setup and the hook use `umask 077`; setup also tightens $BASE
+  and its bin directory to mode 0700. Existing debug logs are tightened to 0600
+  before append, and the TTS helper independently uses umask 077. Kokoro writes
+  `announcement.wav` inside a `mktemp -d` private directory rather than using a
+  predictable PID filename, and an EXIT trap removes the directory on normal
+  and catchable termination paths. This matters when an SSH context lacks
+  macOS's per-user $TMPDIR and falls back to shared /tmp. Settings writes use a
+  random 0600 sibling from tempfile.mkstemp before atomic os.replace.
 - Per-terminal opt-in + gating (2026-07-15): setup.sh writes the chosen
   terminals to $BASE/enabled-terminals (canonical keys: terminal, iterm2,
   ghostty, wezterm, kitty, alacritty). The hook derives its host terminal from
@@ -97,8 +108,11 @@ announce the same things.
 - setup.sh terminal picker: lists only installed terminals (mdfind by bundle id
   + path fallback), alphabetical, bash 3.2-safe multi-select toggle (macOS
   /bin/bash is 3.2 - no associative arrays; selection is a space-delimited
-  string). Idempotent: re-run pre-checks the current selection and can add more.
-  Non-interactive via `--terminals "a,b"` or $CLAUDE_ANNOUNCE_TERMINALS.
+  string). The mdfind presence check consumes its full stream rather than using
+  grep -q, which can SIGPIPE the producer and become a false negative under
+  pipefail. Idempotent: re-run pre-checks the current selection and can add
+  more. Non-interactive via `--terminals "a,b"` or
+  $CLAUDE_ANNOUNCE_TERMINALS.
   Selecting kitty appends allow_remote_control (socket-only) + listen_on to
   kitty.conf, idempotently.
 
@@ -107,9 +121,10 @@ announce the same things.
 `setup.sh` is idempotent: venv + model downloads + swiftc build into
 `~/.local/share/claude-ai-notifs`, then the terminal picker (writes
 `enabled-terminals`, configures kitty if chosen), then wires `hooks.Stop` and
-`hooks.Notification` in `~/.claude/settings.json`. `setup.sh --test` speaks one
-announcement from the newest transcript with both the focus check and the
-terminal gate bypassed (CLAUDE_ANNOUNCE_FORCE=1 skips both).
+`hooks.Notification` in `~/.claude/settings.json`. `setup.sh --test` delivers
+one announcement from the newest transcript with both the focus check and the
+terminal gate bypassed (CLAUDE_ANNOUNCE_FORCE=1 skips both); an active mic turns
+that test into the same silent banner used at runtime.
 
 Hook shape: the wired entries use Claude Code's exec form
 (`command`+`args:["stop"]`) with `async:true`. Exec form runs the executable
@@ -139,8 +154,10 @@ requires Python >=3.12, so 3.12 is the hard floor (3.12-3.14 tested): setup
 detects >=3.12, and recreates a leftover venv built on an older Python before
 installing (else the --require-hashes install fails on numpy). CI has a
 macOS-only step that builds a venv, installs the lock with --require-hashes, and
-imports the runtime deps, so a lock/floor mismatch is caught. After editing a pin
-in requirements.txt, regenerate the lock and re-test. Separately, each Kokoro model
+imports the runtime deps, so a lock/floor mismatch is caught. A stdlib unit test
+also compares every exact direct pin in requirements.txt with requirements.lock,
+so a source-only dependency bump cannot merge behind a green build. After
+editing a pin, regenerate the lock and re-test. Separately, each Kokoro model
 file is SHA-256-verified against the canonical release hash before use -
 present-but-wrong or truncated files are re-downloaded, and a post-download
 mismatch aborts. Those hashes are hard-coded in setup.sh's `model_sha256`; if the
@@ -155,18 +172,26 @@ announce everywhere), warns to remove the entries by hand, and exits nonzero.
 Tests: `test_extract.py` exercises claude-announce-extract.py (turn scoping, the
 "none recorded" anti-hallucination path, slash commands, notification asks);
 `test_hooks.py` exercises claude-announce-hooks.py (structural matching including
-spaced exec paths, idempotence, legacy migration, uninstall, atomic write) -
-both stdlib unittest, loading their hyphenated target by path so extract.py
-stays byte-identical to the Linux copy. `test_lock.sh` sources the real
-audio_lock/audio_unlock and proves concurrent workers serialize and a killed
-holder's lock auto-releases (self-skips where lockf is absent).
+spaced exec paths, idempotence, legacy migration, uninstall, atomic write);
+`test_focus.py` covers WezTerm/kitty focus parsing; `test_requirements.py` guards
+direct-pin lock drift; `test_tts.py` verifies the Kokoro adapter and its private
+output mode with fake runtime modules. These are stdlib unittest, loading
+hyphenated targets by path so extract.py stays byte-identical to the Linux copy. `test_terminal.sh`
+tests host-terminal detection and precedence from the real shell function;
+`test_temp.sh` sources the real WAV allocation/cleanup functions and checks
+randomization plus 0700/0600 modes on BSD or GNU tools; `test_lock.sh` sources
+the real audio_lock/audio_unlock and proves concurrent workers serialize and a
+killed holder's lock auto-releases (self-skips where lockf is absent).
 `.github/workflows/ci.yml` runs bash -n, py_compile, the unittests, and the lock
 test on both Linux and macOS, plus ShellCheck once on Linux (its analysis is
-platform-independent; the three indirect-usage findings are suppressed inline
+platform-independent; intentional indirect-use findings are suppressed inline
 with rationale). macOS is the real target (bash 3.2 + BSD utils); actions are
-pinned to commit SHAs. The macOS job builds both Swift helpers; only live
-Foundation Models inference remains locally verified because it requires
-macOS 26 with Apple Intelligence enabled.
+pinned to commit SHAs, checkout credentials are not persisted, superseded runs
+are cancelled, and jobs have a 20-minute ceiling. The macOS job builds and
+launches both Swift helpers, validating their documented AVAILABLE/UNAVAILABLE
+and BUSY/IDLE diagnostic contracts. Only live Foundation Models inference
+remains locally verified because it requires macOS 26 with Apple Intelligence
+enabled.
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.

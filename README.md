@@ -146,6 +146,7 @@ once.
 ```
 bin/claude-announce              hook entry point (stop | notification)
 bin/claude-announce-extract.py   transcript -> announcement material
+bin/claude-announce-focus.py     WezTerm/kitty focus-response parser
 bin/claude-announce-hooks.py     settings.json wiring (wire | unwire)
 bin/claude-announce-tts.py       Kokoro synthesis (runs in the venv)
 src/claude-announce-summarize.swift  Apple Foundation Models CLI
@@ -153,30 +154,38 @@ src/claude-announce-miccheck.swift   CoreAudio microphone-use detector
 setup.sh                         installer / smoke test
 requirements.txt                 direct Kokoro deps (source for the lock)
 requirements.lock                hash-locked full dependency tree (installed)
-tests/                           unit tests (transcript extractor + hook wiring)
+tests/                           unit, focus, config, and concurrency tests
 ```
 
 Run the automated tests with:
 
 ```sh
 python3 -m unittest discover -s tests   # stdlib only; no install needed
+bash tests/test_terminal.sh             # host-terminal detection
+bash tests/test_temp.sh                 # private temporary WAV lifecycle
 bash tests/test_lock.sh                 # audio-lock concurrency
 ```
 
 They cover the transcript extractor (turn scoping, anti-hallucination,
 slash-command, and notification logic), settings.json hook wiring (structural
-matching, idempotence, migration, uninstall, and atomic writes), and audio-lock
-serialization and kill-release behavior. CI runs bash syntax checks, Python
-compilation, and the unit tests on Linux and macOS for pull requests and pushes
-to `main`. The lock test exercises `lockf` on macOS and self-skips where it is
-unavailable; ShellCheck runs once on Linux, and the hash-locked dependency
-install is tested once on macOS. CI also builds both Swift helpers on macOS;
-live Foundation Models inference remains locally verified because it requires
-macOS 26 with Apple Intelligence enabled.
+matching, idempotence, migration, uninstall, and atomic writes), WezTerm/kitty
+focus parsing, host-terminal precedence, direct dependency source/lock
+consistency, private TTS output, and audio-lock serialization and kill-release
+behavior. CI runs
+bash syntax checks, Python compilation, and the unit tests on Linux and macOS
+for pull requests and pushes to `main`. The lock test exercises `lockf` on
+macOS and self-skips where it is unavailable; ShellCheck runs once on Linux,
+and the hash-locked dependency install is tested once on macOS. CI builds and
+launches both Swift helpers' diagnostics on macOS; live Foundation Models
+inference remains locally verified because it requires macOS 26 with Apple
+Intelligence enabled.
 
 Runtime artifacts live in `~/.local/share/claude-ai-notifs` (venv, models,
 compiled summarizer and microphone checker, and the `enabled-terminals` list);
-the hooks reference the scripts in this repo by absolute path.
+the hooks reference the scripts in this repo by absolute path. Setup and the
+runtime use owner-only permissions for newly created artifacts, and synthesized
+audio lives in a securely randomized private temporary directory that is
+removed on exit.
 
 ## Troubleshooting
 
