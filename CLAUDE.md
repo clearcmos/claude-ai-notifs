@@ -52,26 +52,25 @@ announce the same things.
   instruction forbids inferring outcomes from the request. The sibling Linux
   setup calls the same claude-announce-extract.py; keep the copies identical.
 - Playback is serialized (2026-07-14): two sessions finishing at once used to
-  talk over each other. audio_lock/audio_unlock in bin/claude-announce is a
-  mkdir mutex (macOS bash has no flock builtin) at $BASE/audio.lock. It lives
-  under $BASE, not world-writable /tmp - $HOME is constant across login/SSH/GUI
-  contexts so every session still shares the one lock, but another local account
-  can no longer pre-create it. Both the main afplay/say path and the ding
-  fallback take it; the focus/meeting state is re-checked after acquiring the
-  lock (the wait may have been long); playback is with_timeout-bounded so the
-  lock is held only seconds; and an EXIT trap releases it on every exit path,
-  including the meeting-banner exit. Reclamation (rewritten 2026-07-15):
-  audio_unlock removes the lock only when the pid file still names US (a
-  reclaimed-mid-hold session must not delete the new holder's lock). A dead
-  holder is reclaimed via its recorded PID, re-checked right before rm to narrow
-  the multi-reclaimer race. The catch-all backstop is AGE-based: any lock older
-  than AUDIO_LOCK_MAX (120s) is cleared. Because each holder re-creates the dir,
-  its mtime measures only how long THAT holder has held it, so a healthy
-  back-to-back queue never trips it - and crucially the age path also frees a
-  lock whose holder died before writing its pid (an empty pid file, which the
-  PID-liveness check alone would spin on forever). audio_lock/unlock no-op when
-  $BASE is absent, degrading to unserialized playback rather than looping on a
-  mkdir whose parent does not exist.
+  talk over each other. audio_lock/audio_unlock in bin/claude-announce hold an
+  exclusive macOS lockf(1) lock on an inherited fd (`exec 9>$BASE/audio.lock`;
+  `lockf -s -t 180 9`) for the length of playback. This replaced an earlier
+  mkdir+PID mutex (rewritten 2026-07-15): lockf uses the macOS fd form
+  `lockf [-s] [-t seconds] fd` - verified in the man page and functionally, it
+  locks the fd with no wrapped command and holds it for the shell's lifetime.
+  The kernel arbitrates, so there is NO pid file, no stale-lock reclamation, and
+  no compare-then-delete race - and a dead holder's lock releases automatically
+  when the fd closes (proved in tests/test_lock.sh: concurrent workers serialize;
+  a kill -9'd holder's lock frees immediately). The lock lives under $BASE (not
+  world-writable /tmp; $HOME is constant across login/SSH/GUI contexts so all
+  the user's sessions still share it). Both the main afplay/say path and the ding
+  fallback take it; the focus/meeting state is re-checked after acquiring it (the
+  wait may have been long); playback is with_timeout-bounded so a hold is only
+  seconds; an EXIT trap closes the fd on every exit path. If lockf or $BASE is
+  missing, or the 180s wait times out, audio_lock falls through to unserialized
+  playback rather than dropping the announcement. NOTE the fd is inherited by
+  playback children, so the lock is genuinely held across the whole afplay/say,
+  not just the parent shell.
 - Multi-terminal support (2026-07-15): focus detection is a dispatch keyed on
   the frontmost app's bundle id (front_bundle_id via lsappinfo). Each branch
   answers "is the frontmost terminal's active tab THIS session's tty":
@@ -119,13 +118,17 @@ quoting; async keeps the several-second announcement off the session's critical
 path (command hooks block by default - confirmed against
 code.claude.com/docs/en/hooks). The settings mutation lives in
 `bin/claude-announce-hooks.py` (`wire`/`unwire`), NOT a shell heredoc, so it is
-unit-testable. It matches our hooks structurally on each hook's command field
-(exec form, legacy `command + " stop"` shell form, or a moved-repo basename,
-plus the legacy notify-unfocused.sh) - never a substring of the whole entry, so
-an unrelated hook that merely mentions the name is left alone. Writes are atomic
-(temp sibling + os.replace, mode preserved) so a crash cannot truncate the
-user's settings.json, and backups carry a pid suffix so same-second re-runs do
-not collide.
+unit-testable. It matches our hooks structurally on each hook's command field -
+never a substring of the whole entry, so an unrelated hook that merely mentions
+the name is left alone. Getting the executable path out of the command is
+form-aware: exec form's `command` is the OPAQUE path (an `args` array is
+present), so it is used whole - splitting it on spaces was a real bug that made
+uninstall miss a spaced repo path and strand the live hook; shell form's path is
+the first shlex token. Match keys: exact announce path (when known), that
+executable basename == claude-announce (catches a moved repo), or the legacy
+notify-unfocused.sh. Writes are atomic (temp sibling + os.replace, mode
+preserved) so a crash cannot truncate the user's settings.json, and backups
+carry a pid suffix so same-second re-runs do not collide.
 
 Supply chain: the venv installs from the version-pinned `requirements.txt`
 (direct deps only - not a full hash-lock; see the note in that file), and each
@@ -141,15 +144,18 @@ JSON or python3 is missing it leaves BOTH $BASE and the repo in place (the live
 hooks still point into the repo, and a missing enabled-terminals would make it
 announce everywhere), warns to remove the entries by hand, and exits nonzero.
 
-Tests (stdlib unittest, `python3 -m unittest discover -s tests`):
-`test_extract.py` exercises claude-announce-extract.py (turn scoping, the "none
-recorded" anti-hallucination path, slash commands, notification asks);
-`test_hooks.py` exercises claude-announce-hooks.py (structural matching,
-idempotence, legacy migration, uninstall, atomic write). Both load their
-hyphenated target by path, so extract.py stays byte-identical to the Linux copy.
-`.github/workflows/ci.yml` runs bash -n, py_compile, and the unittests on both
-Linux and macOS (macOS is the real target: bash 3.2 + BSD utils); the Swift
-pieces need macOS 26 + Apple Intelligence and are verified locally, not in CI.
+Tests: `test_extract.py` exercises claude-announce-extract.py (turn scoping, the
+"none recorded" anti-hallucination path, slash commands, notification asks);
+`test_hooks.py` exercises claude-announce-hooks.py (structural matching including
+spaced exec paths, idempotence, legacy migration, uninstall, atomic write) -
+both stdlib unittest, loading their hyphenated target by path so extract.py
+stays byte-identical to the Linux copy. `test_lock.sh` sources the real
+audio_lock/audio_unlock and proves concurrent workers serialize and a killed
+holder's lock auto-releases (self-skips where lockf is absent).
+`.github/workflows/ci.yml` runs bash -n, py_compile, the unittests, and the lock
+test on both Linux and macOS (macOS is the real target: bash 3.2 + BSD utils;
+actions pinned to commit SHAs); the Swift pieces need macOS 26 + Apple
+Intelligence and are verified locally, not in CI.
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.
