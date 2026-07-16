@@ -17,7 +17,10 @@ fi
 FNS="$(mktemp)"
 awk '/^audio_lock\(\) \{/{f=1} f{print} /^\}/{if(f)c++} c==2{exit}' "$SRC" > "$FNS"
 BASE="$(mktemp -d)"
+# AUDIO_LOCK / AUDIO_LOCK_WAIT are read by the sourced audio_lock/audio_unlock.
+# shellcheck disable=SC2034
 AUDIO_LOCK="$BASE/audio.lock"
+# shellcheck disable=SC2034
 AUDIO_LOCK_WAIT=30
 # shellcheck disable=SC1090
 . "$FNS"

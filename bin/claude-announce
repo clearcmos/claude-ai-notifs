@@ -143,6 +143,7 @@ audio_lock() {
     return 0
 }
 
+# shellcheck disable=SC2329  # invoked indirectly via `trap 'audio_unlock' EXIT`
 audio_unlock() {
     # Close fd 9; the kernel releases the lock. Harmless if it was never opened.
     exec 9>&- 2>/dev/null || true
