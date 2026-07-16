@@ -164,8 +164,9 @@ holder's lock auto-releases (self-skips where lockf is absent).
 test on both Linux and macOS, plus ShellCheck once on Linux (its analysis is
 platform-independent; the three indirect-usage findings are suppressed inline
 with rationale). macOS is the real target (bash 3.2 + BSD utils); actions are
-pinned to commit SHAs. The Swift pieces need macOS 26 + Apple Intelligence and
-are verified locally, not in CI.
+pinned to commit SHAs. The macOS job builds both Swift helpers; only live
+Foundation Models inference remains locally verified because it requires
+macOS 26 with Apple Intelligence enabled.
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.

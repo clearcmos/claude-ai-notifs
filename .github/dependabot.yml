@@ -1,5 +1,8 @@
 version: 2
 
+# Python updates remain manual: requirements.lock is generated from
+# requirements.txt with uv pip compile, while CI validates the lock itself but
+# does not verify that it is current with the source requirements.
 updates:
   - package-ecosystem: github-actions
     directory: /

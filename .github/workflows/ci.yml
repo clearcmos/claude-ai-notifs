@@ -12,9 +12,9 @@ jobs:
   # Run on both Linux and macOS. macOS is the production target (system bash is
   # 3.2 with BSD coreutils and lockf), so it exercises the scripts on the shell
   # and utilities they actually ship against; Linux catches portability
-  # regressions cheaply. The Swift summarizer/miccheck need macOS 26 + Apple
-  # Intelligence (FoundationModels), which no GitHub runner offers, so they are
-  # verified locally, not here.
+  # regressions cheaply. The macOS runner also builds both Swift helpers; only
+  # live Foundation Models inference remains local-only because it requires
+  # Apple Intelligence to be enabled.
   #
   # Actions are pinned to commit SHAs (not mutable version tags) for supply-chain
   # safety; the trailing comment records the human-readable version.
@@ -50,6 +50,16 @@ jobs:
             bin/claude-announce-extract.py \
             bin/claude-announce-hooks.py \
             bin/claude-announce-tts.py
+
+      - name: Swift builds (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          swiftc -O -parse-as-library \
+            src/claude-announce-summarize.swift \
+            -o "$RUNNER_TEMP/claude-announce-summarize"
+          swiftc -O \
+            src/claude-announce-miccheck.swift \
+            -o "$RUNNER_TEMP/claude-announce-miccheck"
 
       - name: Unit tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v

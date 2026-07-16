@@ -170,9 +170,9 @@ serialization and kill-release behavior. CI runs bash syntax checks, Python
 compilation, and the unit tests on Linux and macOS for pull requests and pushes
 to `main`. The lock test exercises `lockf` on macOS and self-skips where it is
 unavailable; ShellCheck runs once on Linux, and the hash-locked dependency
-install is tested once on macOS. CI does not build the Swift helpers, which are
-verified locally; the Foundation Models summarizer specifically requires macOS
-26 with Apple Intelligence.
+install is tested once on macOS. CI also builds both Swift helpers on macOS;
+live Foundation Models inference remains locally verified because it requires
+macOS 26 with Apple Intelligence enabled.
 
 Runtime artifacts live in `~/.local/share/claude-ai-notifs` (venv, models,
 compiled summarizer and microphone checker, and the `enabled-terminals` list);
