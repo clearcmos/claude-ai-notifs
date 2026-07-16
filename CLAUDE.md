@@ -130,13 +130,16 @@ notify-unfocused.sh. Writes are atomic (temp sibling + os.replace, mode
 preserved) so a crash cannot truncate the user's settings.json, and backups
 carry a pid suffix so same-second re-runs do not collide.
 
-Supply chain: the venv installs from the version-pinned `requirements.txt`
-(direct deps only - not a full hash-lock; see the note in that file), and each
-Kokoro model file is SHA-256-verified against the canonical release hash before
-use - present-but-wrong or truncated files are re-downloaded, and a
-post-download mismatch aborts. The hashes are hard-coded in setup.sh's
-`model_sha256`; if the upstream release ever re-cuts the model files, update
-both the hash there and the pin note in requirements.txt.
+Supply chain: the venv installs from the hash-locked `requirements.lock`
+(`--require-hashes`: full transitive tree, SHA-256 per artifact), generated from
+the human-edited `requirements.txt` via
+`uv pip compile requirements.txt --generate-hashes --universal` (universal so it
+spans the supported Python range on both install paths). After editing a pin in
+requirements.txt, regenerate the lock and re-test. Separately, each Kokoro model
+file is SHA-256-verified against the canonical release hash before use -
+present-but-wrong or truncated files are re-downloaded, and a post-download
+mismatch aborts. Those hashes are hard-coded in setup.sh's `model_sha256`; if the
+upstream release ever re-cuts the model files, update the hash there.
 
 `--uninstall` never reports a clean removal it did not perform: on success it
 removes the hooks (atomically) and deletes $BASE; if settings.json is invalid
@@ -153,9 +156,11 @@ stays byte-identical to the Linux copy. `test_lock.sh` sources the real
 audio_lock/audio_unlock and proves concurrent workers serialize and a killed
 holder's lock auto-releases (self-skips where lockf is absent).
 `.github/workflows/ci.yml` runs bash -n, py_compile, the unittests, and the lock
-test on both Linux and macOS (macOS is the real target: bash 3.2 + BSD utils;
-actions pinned to commit SHAs); the Swift pieces need macOS 26 + Apple
-Intelligence and are verified locally, not in CI.
+test on both Linux and macOS, plus ShellCheck once on Linux (its analysis is
+platform-independent; the three indirect-usage findings are suppressed inline
+with rationale). macOS is the real target (bash 3.2 + BSD utils); actions are
+pinned to commit SHAs. The Swift pieces need macOS 26 + Apple Intelligence and
+are verified locally, not in CI.
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.
