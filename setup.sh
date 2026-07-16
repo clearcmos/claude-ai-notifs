@@ -316,13 +316,18 @@ if [ ! -x venv/bin/python ]; then
             || die "could not create a venv with $PYTHON; try  brew install python@3.12  and re-run"
     fi
 fi
-info "installing kokoro-onnx + soundfile into the venv (pinned, see requirements.txt)"
+# Install from the hash-locked requirements.lock (--require-hashes): every
+# package, including the full transitive tree, is pinned to a SHA-256 so a
+# tampered or substituted wheel is rejected. The lock is universal (spans the
+# supported Python range); regenerate it with
+#   uv pip compile requirements.txt --generate-hashes --universal -o requirements.lock
+info "installing the hash-locked Kokoro venv (see requirements.lock)"
 if [ -n "$USE_UV" ]; then
-    uv pip install --quiet --python venv/bin/python -r "$REPO/requirements.txt" \
+    uv pip install --quiet --python venv/bin/python --require-hashes -r "$REPO/requirements.lock" \
         || die "$PIP_HINT"
 else
     venv/bin/pip install --quiet --upgrade pip || die "pip self-upgrade failed (network?); re-run once fixed"
-    venv/bin/pip install --quiet -r "$REPO/requirements.txt" || die "$PIP_HINT"
+    venv/bin/pip install --quiet --require-hashes -r "$REPO/requirements.lock" || die "$PIP_HINT"
 fi
 
 # Expected SHA-256 of each model file. These match the canonical kokoro-onnx
