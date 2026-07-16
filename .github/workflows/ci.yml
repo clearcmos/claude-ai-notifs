@@ -10,11 +10,14 @@ permissions:
 
 jobs:
   # Run on both Linux and macOS. macOS is the production target (system bash is
-  # 3.2 with BSD coreutils), so it exercises the scripts on the shell/utilities
-  # they actually ship against; Linux catches portability regressions cheaply.
-  # The Swift summarizer/miccheck need macOS 26 + Apple Intelligence
-  # (FoundationModels), which no GitHub runner offers, so they are verified
-  # locally, not here.
+  # 3.2 with BSD coreutils and lockf), so it exercises the scripts on the shell
+  # and utilities they actually ship against; Linux catches portability
+  # regressions cheaply. The Swift summarizer/miccheck need macOS 26 + Apple
+  # Intelligence (FoundationModels), which no GitHub runner offers, so they are
+  # verified locally, not here.
+  #
+  # Actions are pinned to commit SHAs (not mutable version tags) for supply-chain
+  # safety; the trailing comment records the human-readable version.
   checks:
     strategy:
       fail-fast: false
@@ -22,9 +25,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -32,6 +35,7 @@ jobs:
         run: |
           bash -n setup.sh
           bash -n bin/claude-announce
+          bash -n tests/test_lock.sh
 
       - name: Python compiles
         run: |
@@ -42,3 +46,6 @@ jobs:
 
       - name: Unit tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Audio-lock concurrency (self-skips without lockf)
+        run: bash tests/test_lock.sh
