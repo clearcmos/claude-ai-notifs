@@ -15,7 +15,10 @@ awk '/^make_wav_temp\(\) \{/{f=1} f{print} f && /^cleanup_wav\(\)/{exit}' \
 . "$FNS"
 
 mode() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+    case "$(uname -s)" in
+        Darwin) stat -f '%Lp' "$1" ;;
+        *)      stat -c '%a' "$1" ;;
+    esac
 }
 
 TMPDIR="$BASE"
