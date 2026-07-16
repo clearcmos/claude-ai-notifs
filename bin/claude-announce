@@ -122,35 +122,49 @@ with_timeout() {
 }
 
 # Serialize audio playback so two sessions finishing at once queue instead of
-# talking over each other. mkdir is an atomic mutex needing no extra tool
-# (macOS has no flock); waiters spin until the holder releases. A crashed
-# holder is reclaimed via its recorded PID, and a ~120s backstop keeps a wedged
-# state from deadlocking. Playback is bounded by with_timeout, so the lock is
-# normally held only a few seconds. The path is per-user and fixed (not under
-# $TMPDIR) so every one of the user's sessions shares the one lock.
-AUDIO_LOCK="/tmp/claude-announce-audio-$(id -u).lock"
+# talking over each other. mkdir is an atomic mutex needing no extra tool (macOS
+# bash has no flock builtin); waiters spin until the holder releases. The lock
+# lives under $BASE - user-owned, and shared by all the user's sessions because
+# $HOME is constant across login/SSH/GUI contexts - rather than world-writable
+# /tmp. A dead holder is reclaimed via its recorded PID; as a catch-all, any
+# lock older than AUDIO_LOCK_MAX is cleared, which also frees a lock whose holder
+# died before writing its PID (an empty pid file, which the PID check alone
+# would wait on forever). Each holder re-creates the dir, so its age measures
+# only how long THAT holder has held it - a healthy back-to-back queue never
+# trips the backstop, and playback is with_timeout-bounded so a real hold is
+# only seconds.
+AUDIO_LOCK="$BASE/audio.lock"
+AUDIO_LOCK_MAX=120              # seconds one holder may hold before force-reclaim
 
 audio_lock() {
-    local waited=0
+    [ -d "$BASE" ] || return 0  # no runtime dir: skip locking, just play
+    local holder now age
     until mkdir "$AUDIO_LOCK" 2>/dev/null; do
-        local holder
         holder=$(cat "$AUDIO_LOCK/pid" 2>/dev/null)
         if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-            rm -rf "$AUDIO_LOCK"            # holder gone; reclaim its turn
+            # Holder is dead; reclaim, but only if the pid on disk is still that
+            # same dead holder (a live session may have taken it since our read).
+            [ "$(cat "$AUDIO_LOCK/pid" 2>/dev/null)" = "$holder" ] && rm -rf "$AUDIO_LOCK"
+            continue
+        fi
+        now=$(date +%s)
+        age=$(stat -f %m "$AUDIO_LOCK" 2>/dev/null || echo "$now")
+        if [ $((now - age)) -ge "$AUDIO_LOCK_MAX" ]; then
+            rm -rf "$AUDIO_LOCK"    # wedged, or holder died before writing its pid
             continue
         fi
         sleep 0.2
-        waited=$((waited + 1))
-        if [ "$waited" -ge 600 ]; then      # backstop: never block forever
-            rm -rf "$AUDIO_LOCK"
-            waited=0
-        fi
     done
     printf '%s' "$$" > "$AUDIO_LOCK/pid" 2>/dev/null || true
 }
 
 audio_unlock() {
-    rm -rf "$AUDIO_LOCK" 2>/dev/null || true
+    [ -d "$BASE" ] || return 0
+    # Only remove the lock if we still own it: a backstop/crash reclaim may have
+    # handed it to another session while we held it, and blindly removing would
+    # delete that newer holder's lock and let a third session overlap it.
+    [ "$(cat "$AUDIO_LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$AUDIO_LOCK" 2>/dev/null
+    return 0
 }
 
 # Optional decision trace for diagnosing why a session did or did not speak.
