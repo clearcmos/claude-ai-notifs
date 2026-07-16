@@ -139,16 +139,28 @@ announce the same things.
 ## Deployment
 
 `setup.sh` is idempotent: venv + model downloads + swiftc build into
-`~/.local/share/claude-ai-notifs`, then the terminal picker (writes
+`~/.local/share/claude-ai-notifs`, then an atomic self-contained runtime install,
+then the terminal picker (writes
 `enabled-terminals`, configures kitty if chosen), then wires `hooks.Stop` and
 `hooks.Notification` in `~/.claude/settings.json`. `setup.sh --test` delivers
 one announcement from the newest transcript with both the focus check and the
 terminal gate bypassed (CLAUDE_ANNOUNCE_FORCE=1 skips both); an active mic turns
 that test into the same silent banner used at runtime.
 
+Self-contained runtime (2026-07-16): setup copies every runtime shell/Python
+file into `$BASE/runtime/releases/<unique>/bin`, then atomically replaces the
+relative `$BASE/runtime/current` symlink with Python `os.replace`. Hooks target
+the stable absolute `current/bin/claude-announce` path, so the checkout can be
+moved/deleted and an interrupted upgrade cannot expose a partial file set. Old
+tiny releases are retained so a hook already executing from one is never broken
+mid-turn. The installed `claude-announce-uninstall` plus hooks helper allow clean
+uninstall after the checkout is gone. `test_install.py` deletes a fake checkout
+and proves render/uninstall still work, proves failed upgrades retain `current`,
+and proves successful upgrades atomically select a new release.
+
 Hook shape: the wired entries use Claude Code's exec form
 (`command`+`args:["stop"]`) with `async:true`. Exec form runs the executable
-directly with no shell tokenization, so a repo path with spaces needs no
+directly with no shell tokenization, so the installed path needs no
 quoting; async keeps the several-second announcement off the session's critical
 path (command hooks block by default - confirmed against
 code.claude.com/docs/en/hooks). The settings mutation lives in
@@ -158,9 +170,9 @@ never a substring of the whole entry, so an unrelated hook that merely mentions
 the name is left alone. Getting the executable path out of the command is
 form-aware: exec form's `command` is the OPAQUE path (an `args` array is
 present), so it is used whole - splitting it on spaces was a real bug that made
-uninstall miss a spaced repo path and strand the live hook; shell form's path is
+uninstall miss a spaced executable path and strand the live hook; shell form's path is
 the first shlex token. Match keys: exact announce path (when known), that
-executable basename == claude-announce (catches a moved repo), or the legacy
+executable basename == claude-announce (catches legacy repo installs), or the legacy
 notify-unfocused.sh. Writes are atomic (temp sibling + os.replace, mode
 preserved) so a crash cannot truncate the user's settings.json, and backups
 carry a pid suffix so same-second re-runs do not collide.
@@ -185,9 +197,9 @@ upstream release ever re-cuts the model files, update the hash there.
 
 `--uninstall` never reports a clean removal it did not perform: on success it
 removes the hooks (atomically) and deletes $BASE; if settings.json is invalid
-JSON or python3 is missing it leaves BOTH $BASE and the repo in place (the live
-hooks still point into the repo, and a missing enabled-terminals would make it
-announce everywhere), warns to remove the entries by hand, and exits nonzero.
+JSON or both the installed venv and python3 are missing it leaves $BASE in place
+(the live hooks still point there), warns to remove the entries by hand, and
+exits nonzero. The standalone installed uninstaller has the same behavior.
 
 Tests: `test_extract.py` exercises claude-announce-extract.py (turn scoping, the
 Stop hook's authoritative last_assistant_message with transcript fallback, the
@@ -196,6 +208,8 @@ Stop hook's authoritative last_assistant_message with transcript fallback, the
 status-specific evidence gates, and investigation-versus-change regressions;
 `test_hooks.py` exercises claude-announce-hooks.py (structural matching including
 spaced exec paths, idempotence, legacy migration, uninstall, atomic write);
+`test_install.py` exercises the atomic versioned runtime, repo independence,
+failed-upgrade rollback, permissions, and installed standalone uninstall;
 `test_focus.py` covers WezTerm/kitty focus parsing; `test_requirements.py` guards
 direct-pin lock drift; `test_tts.py` verifies the Kokoro adapter and its private
 output mode with fake runtime modules. These are stdlib unittest, loading

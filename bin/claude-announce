@@ -13,9 +13,10 @@
 # Pipeline: where the host terminal supports it, check whether this session's
 # tab/pane is the one being viewed and exit silently if so. Otherwise: read the
 # hook JSON on stdin, pull the last real user prompt plus Claude's final reply
-# out of the transcript (claude-announce-extract.py), compress them into one
-# short spoken sentence with Apple's on-device foundation model
-# (claude-announce-summarize, falling back to `claude -p --model haiku`),
+# out of the transcript (claude-announce-extract.py), classify completed turns
+# into grounded status/evidence/topic data with Apple's on-device foundation
+# model (falling back to `claude -p --model haiku`), render a conservative
+# sentence locally, then
 # synthesize with Kokoro TTS (af_heart voice, same as the Linux setup), and play
 # it with afplay. Focus is re-checked before playback.
 #
@@ -46,6 +47,7 @@
 #   ~/.local/share/claude-ai-notifs/voices-v1.0.bin
 #   ~/.local/share/claude-ai-notifs/bin/claude-announce-summarize
 #   ~/.local/share/claude-ai-notifs/bin/claude-announce-miccheck
+#   ~/.local/share/claude-ai-notifs/runtime/current/bin/claude-announce + helpers
 #   ~/.local/share/claude-ai-notifs/enabled-terminals            picked terminals
 #
 # Wired into ~/.claude/settings.json (hooks.Stop and hooks.Notification) by
@@ -56,15 +58,15 @@
 # default umask (notably SSH sessions).
 umask 077
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
 VENV_PY="$BASE/venv/bin/python"
 SUMMARIZE="$BASE/bin/claude-announce-summarize"
 MICCHECK="$BASE/bin/claude-announce-miccheck"
-EXTRACT="$REPO/bin/claude-announce-extract.py"
-FOCUS="$REPO/bin/claude-announce-focus.py"
-TTS="$REPO/bin/claude-announce-tts.py"
-RENDER="$REPO/bin/claude-announce-render.py"
+EXTRACT="$APP_ROOT/bin/claude-announce-extract.py"
+FOCUS="$APP_ROOT/bin/claude-announce-focus.py"
+TTS="$APP_ROOT/bin/claude-announce-tts.py"
+RENDER="$APP_ROOT/bin/claude-announce-render.py"
 DING="/System/Library/Sounds/Glass.aiff"
 # Terminals the user enabled at install (one canonical key per line, written by
 # setup.sh). Absent = installed before multi-terminal support; announce anywhere.

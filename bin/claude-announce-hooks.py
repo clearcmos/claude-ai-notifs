@@ -5,7 +5,7 @@ Split out of setup.sh so the part that edits the user's real config is
 unit-testable (tests/test_hooks.py) instead of living in a shell heredoc.
 setup.sh invokes:
 
-    claude-announce-hooks.py wire   <repo> <settings-path>
+    claude-announce-hooks.py wire   <app-root> <settings-path>
     claude-announce-hooks.py unwire <settings-path>
 
 Exit codes: 0 = wired / unwired / nothing to unwire; 2 = settings.json is not
@@ -23,8 +23,8 @@ import time
 NOTIFICATION_MATCHER = "permission_prompt|agent_needs_input|elicitation_dialog"
 
 
-def announce_path(repo):
-    return os.path.join(repo, "bin", "claude-announce")
+def announce_path(app_root):
+    return os.path.join(app_root, "bin", "claude-announce")
 
 
 def is_ours(entry, announce=None):
@@ -134,8 +134,8 @@ def _backup(path):
 
 def main(argv):
     if len(argv) >= 4 and argv[1] == "wire":
-        repo, path = argv[2], argv[3]
-        announce = announce_path(repo)
+        app_root, path = argv[2], argv[3]
+        announce = announce_path(app_root)
         if os.path.exists(path):
             try:
                 with open(path) as f:
@@ -168,7 +168,7 @@ def main(argv):
         return 0
 
     sys.stderr.write(
-        "usage: claude-announce-hooks.py wire <repo> <settings> | unwire <settings>\n"
+        "usage: claude-announce-hooks.py wire <app-root> <settings> | unwire <settings>\n"
     )
     return 64
 

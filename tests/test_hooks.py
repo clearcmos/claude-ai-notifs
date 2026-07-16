@@ -115,6 +115,13 @@ class Wire(unittest.TestCase):
         self.assertEqual(len(s["hooks"]["Stop"]), 1)
         self.assertEqual(s["hooks"]["Stop"][0]["hooks"][0]["args"], ["stop"])
 
+    def test_migrates_repo_backed_hook_to_installed_runtime(self):
+        installed = "/home/u/.local/share/claude-ai-notifs/runtime/current/bin/claude-announce"
+        s = {"hooks": {"Stop": [exec_entry(command="/old/repo/bin/claude-announce")]}}
+        hooks.wire(s, installed)
+        self.assertEqual(len(s["hooks"]["Stop"]), 1)
+        self.assertEqual(s["hooks"]["Stop"][0]["hooks"][0]["command"], installed)
+
 
 class Unwire(unittest.TestCase):
     def test_removes_and_drops_empty_event(self):

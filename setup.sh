@@ -8,8 +8,8 @@
 #                           non-interactive terminal selection (keys, comma/space)
 #   ./setup.sh --test       after setup: run one end-to-end spoken announcement
 #                           against the most recent Claude transcript
-#   ./setup.sh --uninstall  remove the hooks and the runtime dir; the repo
-#                           itself can be deleted afterwards
+#   ./setup.sh --uninstall  remove the hooks and installed runtime; the same
+#                           uninstaller is also copied into the runtime
 #
 # What it does:
 #   1. Checks prerequisites (Apple Silicon, Xcode CLT, Python 3.12+) and reports
@@ -18,12 +18,14 @@
 #      into ~/.local/share/claude-ai-notifs.
 #   3. Compiles the Apple Foundation Models summarizer with swiftc and reports
 #      whether Apple Intelligence is enabled.
-#   4. Asks which installed terminals to announce in (multi-select; re-run to
+#   4. Installs all runtime scripts as an atomic, versioned release under
+#      ~/.local/share/claude-ai-notifs/runtime; the repo is not needed at runtime.
+#   5. Asks which installed terminals to announce in (multi-select; re-run to
 #      add more) and records them in ~/.local/share/claude-ai-notifs/
 #      enabled-terminals. Selecting kitty also enables its remote control.
-#   5. Wires hooks.Stop and hooks.Notification in ~/.claude/settings.json to
-#      bin/claude-announce (absolute path), backing up the old file first and
-#      removing any older notify-unfocused.sh entry this supersedes.
+#   6. Wires hooks.Stop and hooks.Notification in ~/.claude/settings.json to the
+#      stable installed entrypoint (absolute path), backing up the old file first
+#      and removing any older repo-backed/notify-unfocused.sh entry.
 #
 # New-MacBook prerequisites this script checks for but does not install:
 #   xcode-select --install         (swiftc, git)
@@ -40,6 +42,8 @@ SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 # Terminals the announcement runs in (one canonical key per line). The hook
 # reads this and stays silent in terminals not listed here.
 ENABLED_FILE="$BASE/enabled-terminals"
+INSTALLED_ROOT="$BASE/runtime/current"
+ANNOUNCE="$INSTALLED_ROOT/bin/claude-announce"
 
 # Supported terminals, alphabetical by display name: "key|Display Name|bundle id".
 # The picker lists only those actually installed.
@@ -208,6 +212,11 @@ if [ "${1:-}" = "--test" ]; then
     else
         info "meeting detection: not built (voice also plays during meetings)"
     fi
+    if [ -x "$ANNOUNCE" ]; then
+        info "self-contained runtime: ok ($INSTALLED_ROOT)"
+    else
+        info "self-contained runtime: MISSING - run ./setup.sh first"; ok=0
+    fi
     if [ -f "$ENABLED_FILE" ]; then
         info "enabled terminals: $(tr '\n' ' ' < "$ENABLED_FILE")"
     else
@@ -222,7 +231,7 @@ if [ "${1:-}" = "--test" ]; then
     [ -n "$transcript" ] || die "no Claude transcripts found under ~/.claude/projects (run a claude session first)"
     info "announcing most recent transcript: $transcript"
     printf '{"transcript_path": "%s"}' "$transcript" \
-        | CLAUDE_ANNOUNCE_FORCE=1 "$REPO/bin/claude-announce" stop
+        | CLAUDE_ANNOUNCE_FORCE=1 "$ANNOUNCE" stop
     if [ -x "$BASE/bin/claude-announce-miccheck" ] \
             && "$BASE/bin/claude-announce-miccheck" >/dev/null 2>&1; then
         info "test done - the mic is in use, so this arrived as a silent banner notification."
@@ -238,39 +247,7 @@ fi
 # and hooks.Notification (other hooks untouched), then delete the runtime dir.
 # Does not restore any backup: backups may predate unrelated settings changes.
 if [ "${1:-}" = "--uninstall" ]; then
-    # Track whether the hooks were actually removed so we never report a clean
-    # uninstall while leaving live hooks behind: they keep firing in new
-    # sessions (and the command path survives in the repo even after $BASE is
-    # gone), so a false "uninstalled" is worse than a warning.
-    hooks_state="none"          # none | removed | manual
-    if [ -f "$SETTINGS" ]; then
-        if command -v python3 >/dev/null 2>&1; then
-            if python3 "$REPO/bin/claude-announce-hooks.py" unwire "$SETTINGS"; then
-                hooks_state="removed"
-            else
-                hooks_state="manual"
-            fi
-        else
-            hooks_state="manual"
-            info "python3 not found; cannot edit $SETTINGS automatically"
-        fi
-    fi
-    # Manual path: hook removal failed, so the hooks still point into this repo
-    # and would keep firing. Leave BOTH the runtime dir and the repo in place and
-    # exit nonzero - deleting them now would strand live hooks (and a missing
-    # enabled-terminals would make the tool announce everywhere, not less).
-    if [ "$hooks_state" = "manual" ]; then
-        info "WARNING: could not remove the claude-announce hooks from $SETTINGS."
-        info "They still point into this repo and will keep firing in new sessions."
-        info "Nothing was deleted. Remove the entries mentioning claude-announce under"
-        info "hooks.Stop and hooks.Notification, then delete $BASE and this repo by hand."
-        exit 1
-    fi
-    rm -rf "$BASE"
-    info "removed $BASE"
-    info "uninstalled. Running claude sessions keep their hook snapshot until restarted."
-    info "this repo directory can now be deleted."
-    exit 0
+    exec "$REPO/bin/claude-announce-uninstall"
 fi
 
 # 1. Prerequisites -----------------------------------------------------------
@@ -399,7 +376,16 @@ else
     rm -f "$BASE/bin/claude-announce-miccheck"
 fi
 
-# 4. Terminal selection ------------------------------------------------------
+# 4. Self-contained runtime --------------------------------------------------
+
+info "installing self-contained runtime scripts"
+INSTALLED_ROOT=$("$BASE/venv/bin/python" "$REPO/bin/claude-announce-install.py" \
+    "$REPO" "$BASE") || die "could not install the runtime scripts"
+ANNOUNCE="$INSTALLED_ROOT/bin/claude-announce"
+[ -x "$ANNOUNCE" ] || die "installed entrypoint is missing: $ANNOUNCE"
+info "runtime entrypoint: $ANNOUNCE"
+
+# 5. Terminal selection ------------------------------------------------------
 
 # Preselection for non-interactive installs: CLAUDE_ANNOUNCE_TERMINALS env var
 # or  --terminals "ghostty,iterm2"  on the command line. Empty => interactive.
@@ -412,13 +398,15 @@ for ((i = 1; i <= $#; i++)); do
 done
 choose_terminals "$PRESELECT"
 
-# 5. Hook wiring --------------------------------------------------------------
+# 6. Hook wiring --------------------------------------------------------------
 
 info "wiring hooks into $SETTINGS"
 WIRE_PY="${PYTHON:-python3}"
 [ -n "$USE_UV" ] && WIRE_PY="$BASE/venv/bin/python"
-"$WIRE_PY" "$REPO/bin/claude-announce-hooks.py" wire "$REPO" "$SETTINGS" \
+"$WIRE_PY" "$INSTALLED_ROOT/bin/claude-announce-hooks.py" \
+    wire "$INSTALLED_ROOT" "$SETTINGS" \
     || die "hook wiring failed; $SETTINGS was not modified"
 
 info "done. Hooks apply to NEW claude sessions (running ones keep their old hook snapshot)."
+info "the runtime is self-contained; this repo can now be moved or deleted."
 info "smoke test:  ./setup.sh --test"

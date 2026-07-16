@@ -27,7 +27,8 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
 
 ## How it works
 
-1. Claude Code `Stop` and `Notification` hooks run `bin/claude-announce`.
+1. Claude Code `Stop` and `Notification` hooks run the self-contained installed
+   entrypoint under `~/.local/share/claude-ai-notifs/runtime/current/bin/`.
 2. It reads the terminal hosting the session from the environment; if that
    terminal is not one you enabled at install, it stays silent. Otherwise it
    decides, where the terminal supports it, whether you are looking at this
@@ -138,6 +139,11 @@ Notes if you are not the author:
 - Re-run any time to enable additional terminals (newly installed or previously
   skipped); the picker pre-checks your current selection. Selecting kitty adds
   `allow_remote_control` to your `kitty.conf` (restart kitty to apply).
+- Setup copies all runtime scripts into an atomic, versioned release under
+  `~/.local/share/claude-ai-notifs/runtime` and wires hooks to its stable
+  `runtime/current` path. After setup finishes, the checkout can be moved or
+  deleted without affecting notifications. Use a fresh checkout to update or
+  reconfigure the installation later.
 - See the support matrix above for per-terminal focus behavior, and the note at
   the top about the macOS 26 / Apple Intelligence summarizer fallback.
 
@@ -158,7 +164,9 @@ bin/claude-announce-extract.py   transcript -> announcement material
 bin/claude-announce-render.py    grounded assessment -> conservative sentence
 bin/claude-announce-focus.py     WezTerm/kitty focus-response parser
 bin/claude-announce-hooks.py     settings.json wiring (wire | unwire)
+bin/claude-announce-install.py   atomic self-contained runtime installer
 bin/claude-announce-tts.py       Kokoro synthesis (runs in the venv)
+bin/claude-announce-uninstall    standalone installed uninstaller
 src/claude-announce-summarize.swift  Apple Foundation Models CLI
 src/claude-announce-miccheck.swift   CoreAudio microphone-use detector
 setup.sh                         installer / smoke test
@@ -180,6 +188,8 @@ They cover the transcript extractor (turn scoping, anti-hallucination,
 authoritative final-reply fallback, slash-command, and notification logic),
 the grounded renderer (verbatim evidence, conservative status validation,
 neutral fallback, and investigation-versus-completion regressions),
+atomic runtime installation (source-checkout independence, safe upgrades, and
+standalone uninstall),
 settings.json hook wiring (structural
 matching, idempotence, migration, uninstall, and atomic writes), WezTerm/kitty
 focus parsing, host-terminal precedence, direct dependency source/lock
@@ -193,12 +203,12 @@ launches both Swift helpers' diagnostics on macOS; live Foundation Models
 inference remains locally verified because it requires macOS 26 with Apple
 Intelligence enabled.
 
-Runtime artifacts live in `~/.local/share/claude-ai-notifs` (venv, models,
-compiled summarizer and microphone checker, and the `enabled-terminals` list);
-the hooks reference the scripts in this repo by absolute path. Setup and the
-runtime use owner-only permissions for newly created artifacts, and synthesized
-audio lives in a securely randomized private temporary directory that is
-removed on exit.
+Runtime artifacts live in `~/.local/share/claude-ai-notifs`: the venv, models,
+compiled helpers, `enabled-terminals`, and versioned runtime script releases.
+The hooks use an absolute path to the atomically updated `runtime/current`
+installation, not the source checkout. Setup and the runtime use owner-only
+permissions for newly created artifacts, and synthesized audio lives in a
+securely randomized private temporary directory that is removed on exit.
 
 ## Troubleshooting
 
@@ -223,17 +233,24 @@ first-call cold start; it warms up after that.)
 ./setup.sh --uninstall
 ```
 
+If you already deleted the checkout, run the installed uninstaller instead:
+
+```sh
+~/.local/share/claude-ai-notifs/runtime/current/bin/claude-announce-uninstall
+```
+
 Removes the `claude-announce` entries from `hooks.Stop` and
 `hooks.Notification` in `~/.claude/settings.json` (other hooks and settings
 untouched, with a backup written first) and deletes
 `~/.local/share/claude-ai-notifs` (including the `enabled-terminals` list).
-Delete the repo directory afterwards. Already-running Claude sessions keep their
-hook snapshot until restarted. If you enabled kitty, the `allow_remote_control`
+The checkout is never removed and may already be gone. Already-running Claude
+sessions keep their hook snapshot until restarted. If you enabled kitty, the `allow_remote_control`
 block added to your `kitty.conf` is left in place; remove it manually if you
 want.
 
-If `settings.json` is not valid JSON (or `python3` is unavailable), uninstall
+If `settings.json` is not valid JSON (or both the installed venv and `python3`
+are unavailable), uninstall
 cannot edit it safely. Rather than report a clean uninstall it did not perform,
-it leaves both the runtime directory and this repo in place (the live hooks
-still point into the repo), warns you to delete the `claude-announce` entries
-under `hooks.Stop`/`hooks.Notification` by hand, and exits nonzero.
+it leaves the installed runtime in place because the live hooks still point
+there, warns you to delete the `claude-announce` entries under
+`hooks.Stop`/`hooks.Notification` by hand, and exits nonzero.

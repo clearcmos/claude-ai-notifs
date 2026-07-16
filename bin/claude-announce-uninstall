@@ -1,0 +1,43 @@
+#!/bin/bash
+# Standalone uninstaller copied into the installed runtime. It intentionally
+# leaves BASE intact when hook removal fails, so live hooks never point at files
+# the uninstaller just deleted.
+
+set -euo pipefail
+umask 077
+
+BASE="$HOME/.local/share/claude-ai-notifs"
+SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOKS="$HERE/claude-announce-hooks.py"
+
+info() { printf '==> %s\n' "$*"; }
+
+hooks_state="none"          # none | removed | manual
+if [ -f "$SETTINGS" ]; then
+    PY="$BASE/venv/bin/python"
+    [ -x "$PY" ] || PY="$(command -v python3 || true)"
+    if [ -n "$PY" ] && [ -f "$HOOKS" ]; then
+        if "$PY" "$HOOKS" unwire "$SETTINGS"; then
+            hooks_state="removed"
+        else
+            hooks_state="manual"
+        fi
+    else
+        hooks_state="manual"
+        info "python or the installed hook helper is missing; cannot edit $SETTINGS automatically"
+    fi
+fi
+
+if [ "$hooks_state" = "manual" ]; then
+    info "WARNING: could not remove the claude-announce hooks from $SETTINGS."
+    info "They still point into $BASE and will keep firing in new sessions."
+    info "Nothing was deleted. Remove the entries mentioning claude-announce under"
+    info "hooks.Stop and hooks.Notification, then delete $BASE by hand."
+    exit 1
+fi
+
+rm -rf "$BASE"
+info "removed $BASE"
+info "uninstalled. Running Claude sessions keep their hook snapshot until restarted."
+exit 0
