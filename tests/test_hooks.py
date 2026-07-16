@@ -61,6 +61,20 @@ class IsOurs(unittest.TestCase):
         entry = {"matcher": "claude-announce", "hooks": [{"type": "command", "command": "echo hi"}]}
         self.assertFalse(hooks.is_ours(entry, ANNOUNCE))
 
+    def test_spaced_exec_path_without_known_announce(self):
+        # Uninstall does not know the repo path; a spaced exec-form command
+        # must still be recognized (regression: splitting on spaces missed it,
+        # so uninstall left the live hook behind while deleting $BASE).
+        entry = exec_entry(command="/tmp/repo with spaces/bin/claude-announce")
+        self.assertTrue(hooks.is_ours(entry))
+
+
+class UnwireSpacedPath(unittest.TestCase):
+    def test_unwire_removes_spaced_exec_entry(self):
+        s = {"hooks": {"Stop": [exec_entry(command="/a b/bin/claude-announce")]}}
+        self.assertTrue(hooks.unwire(s))
+        self.assertNotIn("Stop", s["hooks"])
+
 
 class Wire(unittest.TestCase):
     def test_wires_async_exec_form(self):

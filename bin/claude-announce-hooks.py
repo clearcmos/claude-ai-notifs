@@ -14,6 +14,7 @@ valid JSON (the caller must then NOT claim success). Stdlib only.
 
 import json
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -37,10 +38,25 @@ def is_ours(entry, announce=None):
     """
     for h in entry.get("hooks", []) or []:
         cmd = h.get("command", "") or ""
-        first = cmd.split()[0].strip("'\"") if cmd else ""
+        if not cmd:
+            continue
         if announce and (cmd == announce or cmd.startswith(announce + " ")):
             return True
-        if os.path.basename(first) == "claude-announce" or "notify-unfocused.sh" in cmd:
+        if "notify-unfocused.sh" in cmd:
+            return True
+        # The executable path: in exec form (an "args" array is present) the
+        # command IS the opaque path - a path with spaces stays intact, so use
+        # it directly (splitting on spaces here was the uninstall-misses bug).
+        # In shell form the path is the first shell token of the command string.
+        if "args" in h:
+            exe = cmd
+        else:
+            try:
+                exe = shlex.split(cmd)[0]
+            except (ValueError, IndexError):
+                parts = cmd.split()
+                exe = parts[0] if parts else ""
+        if os.path.basename(exe) == "claude-announce":
             return True
     return False
 
