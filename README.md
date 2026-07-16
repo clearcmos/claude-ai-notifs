@@ -112,7 +112,9 @@ Notes if you are not the author:
 - The Kokoro models (~340 MB) are downloaded from the `thewh1teagle/kokoro-onnx`
   GitHub release and verified by SHA-256 against the known release hashes before
   use (a mismatch aborts and re-downloads); setup needs network for that and for
-  the pip install. Python dependencies are version-pinned in `requirements.txt`.
+  the pip install. Python dependencies install from a hash-locked
+  `requirements.lock` (`--require-hashes`, full transitive tree), generated from
+  `requirements.txt`.
 - Re-run any time to enable additional terminals (newly installed or previously
   skipped); the picker pre-checks your current selection. Selecting kitty adds
   `allow_remote_control` to your `kitty.conf` (restart kitty to apply).
@@ -136,7 +138,8 @@ bin/claude-announce-hooks.py     settings.json wiring (wire | unwire)
 bin/claude-announce-tts.py       Kokoro synthesis (runs in the venv)
 src/claude-announce-summarize.swift  Apple Foundation Models CLI
 setup.sh                         installer / smoke test
-requirements.txt                 pinned Kokoro venv dependencies
+requirements.txt                 direct Kokoro deps (source for the lock)
+requirements.lock                hash-locked full dependency tree (installed)
 tests/                           unit tests (transcript extractor + hook wiring)
 ```
 
@@ -144,9 +147,11 @@ Run the tests with `python3 -m unittest discover -s tests` (stdlib only, no
 install needed). They cover the transcript extractor (turn scoping,
 anti-hallucination, slash-command, and notification logic) and the settings.json
 hook wiring (structural matching, idempotence, migration, uninstall, atomic
-write); the same checks run in CI on every push (`.github/workflows/ci.yml`), on
-both Linux and macOS. The Swift components need macOS 26 with Apple
-Intelligence, so they are verified locally rather than in CI.
+write); `tests/test_lock.sh` additionally proves the audio lock serializes and
+releases on a killed holder. The same checks, plus ShellCheck, run in CI on
+every push (`.github/workflows/ci.yml`), on both Linux and macOS. The Swift
+components need macOS 26 with Apple Intelligence, so they are verified locally
+rather than in CI.
 
 Runtime artifacts live in `~/.local/share/claude-ai-notifs` (venv, models,
 compiled summarizer, and the `enabled-terminals` list); the hooks reference the
