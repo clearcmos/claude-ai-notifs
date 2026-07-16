@@ -143,7 +143,9 @@ audio_lock() {
     return 0
 }
 
-# shellcheck disable=SC2329  # invoked indirectly via `trap 'audio_unlock' EXIT`
+# Invoked indirectly via `trap 'audio_unlock' EXIT`, so shellcheck flags it as
+# unreachable/uninvoked (SC2317 on older versions, SC2329 on newer).
+# shellcheck disable=SC2317,SC2329
 audio_unlock() {
     # Close fd 9; the kernel releases the lock. Harmless if it was never opened.
     exec 9>&- 2>/dev/null || true
