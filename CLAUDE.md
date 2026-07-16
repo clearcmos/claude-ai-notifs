@@ -53,14 +53,25 @@ announce the same things.
   setup calls the same claude-announce-extract.py; keep the copies identical.
 - Playback is serialized (2026-07-14): two sessions finishing at once used to
   talk over each other. audio_lock/audio_unlock in bin/claude-announce is a
-  mkdir mutex on /tmp/claude-announce-audio-<uid>.lock (macOS has no flock, and
-  a fixed per-user path outside $TMPDIR guarantees all the user's sessions
-  share it), so concurrent announcements queue and play back-to-back. Both the
-  main afplay/say path and the ding fallback take it; the focus/meeting state
-  is re-checked after acquiring the lock (the wait may have been long); a
-  crashed holder is reclaimed via its recorded PID with a ~120s backstop;
-  playback is with_timeout-bounded so the lock is held only seconds; and an
-  EXIT trap releases it on every exit path, including the meeting-banner exit.
+  mkdir mutex (macOS bash has no flock builtin) at $BASE/audio.lock. It lives
+  under $BASE, not world-writable /tmp - $HOME is constant across login/SSH/GUI
+  contexts so every session still shares the one lock, but another local account
+  can no longer pre-create it. Both the main afplay/say path and the ding
+  fallback take it; the focus/meeting state is re-checked after acquiring the
+  lock (the wait may have been long); playback is with_timeout-bounded so the
+  lock is held only seconds; and an EXIT trap releases it on every exit path,
+  including the meeting-banner exit. Reclamation (rewritten 2026-07-15):
+  audio_unlock removes the lock only when the pid file still names US (a
+  reclaimed-mid-hold session must not delete the new holder's lock). A dead
+  holder is reclaimed via its recorded PID, re-checked right before rm to narrow
+  the multi-reclaimer race. The catch-all backstop is AGE-based: any lock older
+  than AUDIO_LOCK_MAX (120s) is cleared. Because each holder re-creates the dir,
+  its mtime measures only how long THAT holder has held it, so a healthy
+  back-to-back queue never trips it - and crucially the age path also frees a
+  lock whose holder died before writing its pid (an empty pid file, which the
+  PID-liveness check alone would spin on forever). audio_lock/unlock no-op when
+  $BASE is absent, degrading to unserialized playback rather than looping on a
+  mkdir whose parent does not exist.
 - Multi-terminal support (2026-07-15): focus detection is a dispatch keyed on
   the frontmost app's bundle id (front_bundle_id via lsappinfo). Each branch
   answers "is the frontmost terminal's active tab THIS session's tty":
@@ -97,10 +108,48 @@ announce the same things.
 `setup.sh` is idempotent: venv + model downloads + swiftc build into
 `~/.local/share/claude-ai-notifs`, then the terminal picker (writes
 `enabled-terminals`, configures kitty if chosen), then wires `hooks.Stop` and
-`hooks.Notification` in `~/.claude/settings.json` by absolute repo path
-(backing up the file first). `setup.sh --test` speaks one announcement from the
-newest transcript with both the focus check and the terminal gate bypassed
-(CLAUDE_ANNOUNCE_FORCE=1 skips both).
+`hooks.Notification` in `~/.claude/settings.json`. `setup.sh --test` speaks one
+announcement from the newest transcript with both the focus check and the
+terminal gate bypassed (CLAUDE_ANNOUNCE_FORCE=1 skips both).
+
+Hook shape: the wired entries use Claude Code's exec form
+(`command`+`args:["stop"]`) with `async:true`. Exec form runs the executable
+directly with no shell tokenization, so a repo path with spaces needs no
+quoting; async keeps the several-second announcement off the session's critical
+path (command hooks block by default - confirmed against
+code.claude.com/docs/en/hooks). The settings mutation lives in
+`bin/claude-announce-hooks.py` (`wire`/`unwire`), NOT a shell heredoc, so it is
+unit-testable. It matches our hooks structurally on each hook's command field
+(exec form, legacy `command + " stop"` shell form, or a moved-repo basename,
+plus the legacy notify-unfocused.sh) - never a substring of the whole entry, so
+an unrelated hook that merely mentions the name is left alone. Writes are atomic
+(temp sibling + os.replace, mode preserved) so a crash cannot truncate the
+user's settings.json, and backups carry a pid suffix so same-second re-runs do
+not collide.
+
+Supply chain: the venv installs from the version-pinned `requirements.txt`
+(direct deps only - not a full hash-lock; see the note in that file), and each
+Kokoro model file is SHA-256-verified against the canonical release hash before
+use - present-but-wrong or truncated files are re-downloaded, and a
+post-download mismatch aborts. The hashes are hard-coded in setup.sh's
+`model_sha256`; if the upstream release ever re-cuts the model files, update
+both the hash there and the pin note in requirements.txt.
+
+`--uninstall` never reports a clean removal it did not perform: on success it
+removes the hooks (atomically) and deletes $BASE; if settings.json is invalid
+JSON or python3 is missing it leaves BOTH $BASE and the repo in place (the live
+hooks still point into the repo, and a missing enabled-terminals would make it
+announce everywhere), warns to remove the entries by hand, and exits nonzero.
+
+Tests (stdlib unittest, `python3 -m unittest discover -s tests`):
+`test_extract.py` exercises claude-announce-extract.py (turn scoping, the "none
+recorded" anti-hallucination path, slash commands, notification asks);
+`test_hooks.py` exercises claude-announce-hooks.py (structural matching,
+idempotence, legacy migration, uninstall, atomic write). Both load their
+hyphenated target by path, so extract.py stays byte-identical to the Linux copy.
+`.github/workflows/ci.yml` runs bash -n, py_compile, and the unittests on both
+Linux and macOS (macOS is the real target: bash 3.2 + BSD utils); the Swift
+pieces need macOS 26 + Apple Intelligence and are verified locally, not in CI.
 
 Hook changes only affect new Claude sessions; running sessions keep the hook
 snapshot from their start.

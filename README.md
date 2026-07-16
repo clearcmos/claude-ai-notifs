@@ -55,8 +55,10 @@ terminal is queried directly (AppleScript, or its CLI) instead.
    re-checked right before playback in case a call starts mid-generation.
 
 Every stage degrades: no summary means the plain Glass ding (a generic banner
-in a meeting), no Kokoro means the native `say` voice. The hook always exits 0
-and can never block a session.
+in a meeting), no Kokoro means the native `say` voice. The hook always exits 0,
+so it can never fail a session, and setup wires it with `async: true`, so the
+several seconds of summarizing, synthesizing, and playback run in the background
+and never delay the next turn.
 
 ## Supported terminals
 
@@ -108,7 +110,9 @@ Notes if you are not the author:
 - Existing hooks in `~/.claude/settings.json` are preserved; setup only
   appends its own Stop/Notification entries (and re-runs replace them).
 - The Kokoro models (~340 MB) are downloaded from the `thewh1teagle/kokoro-onnx`
-  GitHub release; setup needs network for that and for the pip install.
+  GitHub release and verified by SHA-256 against the known release hashes before
+  use (a mismatch aborts and re-downloads); setup needs network for that and for
+  the pip install. Python dependencies are version-pinned in `requirements.txt`.
 - Re-run any time to enable additional terminals (newly installed or previously
   skipped); the picker pre-checks your current selection. Selecting kitty adds
   `allow_remote_control` to your `kitty.conf` (restart kitty to apply).
@@ -128,10 +132,21 @@ permission prompt (controlling Terminal via AppleScript); allow it once.
 ```
 bin/claude-announce              hook entry point (stop | notification)
 bin/claude-announce-extract.py   transcript -> announcement material
+bin/claude-announce-hooks.py     settings.json wiring (wire | unwire)
 bin/claude-announce-tts.py       Kokoro synthesis (runs in the venv)
 src/claude-announce-summarize.swift  Apple Foundation Models CLI
 setup.sh                         installer / smoke test
+requirements.txt                 pinned Kokoro venv dependencies
+tests/                           unit tests (transcript extractor + hook wiring)
 ```
+
+Run the tests with `python3 -m unittest discover -s tests` (stdlib only, no
+install needed). They cover the transcript extractor (turn scoping,
+anti-hallucination, slash-command, and notification logic) and the settings.json
+hook wiring (structural matching, idempotence, migration, uninstall, atomic
+write); the same checks run in CI on every push (`.github/workflows/ci.yml`), on
+both Linux and macOS. The Swift components need macOS 26 with Apple
+Intelligence, so they are verified locally rather than in CI.
 
 Runtime artifacts live in `~/.local/share/claude-ai-notifs` (venv, models,
 compiled summarizer, and the `enabled-terminals` list); the hooks reference the
@@ -168,3 +183,8 @@ Delete the repo directory afterwards. Already-running Claude sessions keep their
 hook snapshot until restarted. If you enabled kitty, the `allow_remote_control`
 block added to your `kitty.conf` is left in place; remove it manually if you
 want.
+
+If `settings.json` is not valid JSON (or `python3` is unavailable), uninstall
+cannot edit it safely: it still removes the runtime directory but prints a
+warning telling you to delete the `claude-announce` hook entries by hand, rather
+than reporting a clean uninstall it did not perform.
