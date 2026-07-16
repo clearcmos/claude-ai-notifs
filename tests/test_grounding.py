@@ -104,6 +104,30 @@ class GroundedRendering(unittest.TestCase):
         self.assertEqual(render.render(source, value),
                          "Claude worked on deployment.")
 
+    def test_ordered_ellipsis_evidence_is_grounded(self):
+        source = (
+            "The skill commit is on origin/main, and both files are present "
+            "there. Your skill is included and unaffected."
+        )
+        value = assessment(
+            "verified",
+            "The skill commit is on origin/main ... both files are present "
+            "there. ... Your skill is included and unaffected",
+            "skill on origin/main",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Claude verified skill on origin/main.")
+
+    def test_ellipsis_evidence_fragments_must_remain_in_order(self):
+        source = "First the configuration was checked. Then the tests passed."
+        value = assessment(
+            "verified",
+            "the tests passed ... configuration was checked",
+            "configuration",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Claude worked on configuration.")
+
     def test_status_must_be_supported_by_its_evidence(self):
         source = "I explained the access steps, but did not perform them."
         value = assessment(
@@ -141,6 +165,22 @@ class GroundedRendering(unittest.TestCase):
     def test_topic_must_come_from_source(self):
         source = "I investigated the authentication flow."
         value = assessment("investigated", "investigated", "production database")
+        self.assertEqual(render.render(source, value),
+                         "Claude investigated the request.")
+
+    def test_topic_can_reorder_grounded_words(self):
+        source = "The comparison covers pricing for OneLogin versus Okta."
+        value = assessment(
+            "answered",
+            "The comparison covers pricing",
+            "OneLogin and Okta pricing",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Claude explained OneLogin and Okta pricing.")
+
+    def test_topic_cannot_introduce_an_unsupported_word(self):
+        source = "I investigated the authentication flow."
+        value = assessment("investigated", "investigated", "production flow")
         self.assertEqual(render.render(source, value),
                          "Claude investigated the request.")
 

@@ -61,8 +61,10 @@ announce the same things.
   helper uses DynamicGenerationSchema (not @Generable macros: command-line
   Swift SDKs may omit the macro plugin) to return status + exact evidence + an
   extractive topic with greedy sampling. claude-announce-render.py verifies the
-  evidence/topic against the reply, requires explicit completed-action grammar
-  for `changed`, checks status-specific evidence, and renders a fixed template;
+  evidence/topic against the reply (ordered ellipsis-separated evidence and
+  reordered already-present topic words are allowed), requires explicit
+  completed-action grammar for `changed`, guards negative statuses and explicit
+  negations, and renders a fixed template;
   unsupported claims downgrade to neutral "worked on" wording. Haiku fallback
   produces the same JSON and passes through the same validator. With no recorded
   reply the status is forcibly neutral, and total model failure becomes the

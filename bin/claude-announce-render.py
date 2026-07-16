@@ -108,6 +108,47 @@ def occurs_in(source, candidate):
     return bool(candidate) and candidate in source
 
 
+def evidence_occurs_in(source, candidate):
+    """Accept an exact quote or ordered exact fragments separated by ellipses."""
+    if occurs_in(source, candidate):
+        return True
+    source = normalize(source).casefold()
+    fragments = [
+        normalize(part).casefold()
+        for part in re.split(r"(?:\.{3,}|…)", candidate)
+        if normalize(part)
+    ]
+    if not fragments:
+        return False
+    position = 0
+    for fragment in fragments:
+        # Tiny fragments such as punctuation around an ellipsis prove nothing.
+        if len(fragment) < 4:
+            continue
+        found = source.find(fragment, position)
+        if found < 0:
+            return False
+        position = found + len(fragment)
+    return position > 0
+
+
+def topic_occurs_in(source, candidate):
+    """Allow a short extractive topic to reorder words already in the reply."""
+    if occurs_in(source, candidate):
+        return True
+    stopwords = {
+        "a", "an", "and", "about", "for", "from", "in", "of", "on", "or",
+        "the", "to", "with",
+    }
+    token_pattern = r"[a-z0-9]+(?:[._/+-][a-z0-9]+)*"
+    source_tokens = set(re.findall(token_pattern, source.casefold()))
+    topic_tokens = {
+        token for token in re.findall(token_pattern, candidate.casefold())
+        if token not in stopwords
+    }
+    return bool(topic_tokens) and topic_tokens.issubset(source_tokens)
+
+
 def parse_assessment(raw):
     """Decode plain or fenced JSON, tolerating a short model preamble."""
     raw = raw.strip()
@@ -147,7 +188,7 @@ def reply_from_hook(raw, limit=2600):
 def safe_topic(source, candidate):
     """Return a short extractive topic or a deterministic generic fallback."""
     candidate = normalize(candidate).strip(" \t\r\n\"'`.,:;!?-–—")
-    if not occurs_in(source, candidate):
+    if not topic_occurs_in(source, candidate):
         return "the request"
     words = candidate.split()
     if not words or len(words) > 8 or len(candidate) > 90:
@@ -169,11 +210,14 @@ def supported_change(evidence):
 def supported_status(status, evidence):
     if status == "changed":
         return supported_change(evidence)
+    if status in {"investigated", "answered", "proposed", "verified"}:
+        # These do not assert that the user's requested mutation happened. Let
+        # the constrained classifier distinguish them as long as its evidence
+        # is grounded and does not explicitly negate the classified action.
+        return not _NEGATED_STATUS_ACTION.search(evidence)
     pattern = _STATUS_EVIDENCE.get(status)
     if pattern is not None and not pattern.search(evidence):
         return False
-    if status in {"investigated", "answered", "proposed", "verified"}:
-        return not _NEGATED_STATUS_ACTION.search(evidence)
     if status == "blocked":
         return not _NOT_BLOCKED.search(evidence)
     if status == "failed":
@@ -194,7 +238,7 @@ def render(source, assessment, force_neutral=False):
         status = "unknown"
     if force_neutral:
         status = "unknown"
-    elif status != "unknown" and not occurs_in(source, evidence):
+    elif status != "unknown" and not evidence_occurs_in(source, evidence):
         status = "unknown"
     elif not supported_status(status, evidence):
         status = "unknown"
