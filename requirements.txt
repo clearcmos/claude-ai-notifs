@@ -1,0 +1,10 @@
+# Kokoro TTS runtime for claude-ai-notifs. DIRECT dependencies are version-
+# pinned here; this is not a full lock - transitive deps (onnxruntime, numpy,
+# ...) still float within each package's declared ranges, and there are no
+# artifact hashes. For a fully reproducible, hash-locked install, generate a
+# requirements.lock with `uv pip compile requirements.txt --generate-hashes`
+# and install with --require-hashes. Bumping a pin is a deliberate step: re-run
+# setup.sh --test afterward to confirm the voice still synthesizes. Known-good
+# transitive versions at last pin: onnxruntime 1.27.0, numpy 2.5.1 (Python 3.12).
+kokoro-onnx==0.4.7
+soundfile==0.14.0

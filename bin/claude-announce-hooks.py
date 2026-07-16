@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Wire or unwire the claude-announce hooks in a Claude Code settings.json.
+
+Split out of setup.sh so the part that edits the user's real config is
+unit-testable (tests/test_hooks.py) instead of living in a shell heredoc.
+setup.sh invokes:
+
+    claude-announce-hooks.py wire   <repo> <settings-path>
+    claude-announce-hooks.py unwire <settings-path>
+
+Exit codes: 0 = wired / unwired / nothing to unwire; 2 = settings.json is not
+valid JSON (the caller must then NOT claim success). Stdlib only.
+"""
+
+import json
+import os
+import shutil
+import sys
+import time
+
+NOTIFICATION_MATCHER = "permission_prompt|agent_needs_input|elicitation_dialog"
+
+
+def announce_path(repo):
+    return os.path.join(repo, "bin", "claude-announce")
+
+
+def is_ours(entry, announce=None):
+    """True if this hook entry runs our announcer (current exec form or the
+    legacy shell form) or the legacy notify-unfocused.sh it superseded.
+
+    Inspects only each hook's command field, never the whole entry, so an
+    unrelated hook that merely mentions the name in a matcher/description is
+    never matched. An exact `announce` path matches when known; the command
+    basename also matches, so an install whose repo has since moved is still
+    recognized for cleanup.
+    """
+    for h in entry.get("hooks", []) or []:
+        cmd = h.get("command", "") or ""
+        first = cmd.split()[0].strip("'\"") if cmd else ""
+        if announce and (cmd == announce or cmd.startswith(announce + " ")):
+            return True
+        if os.path.basename(first) == "claude-announce" or "notify-unfocused.sh" in cmd:
+            return True
+    return False
+
+
+def _hook(announce, arg):
+    # Exec form: no shell tokenization (spaces in the repo path are safe), and
+    # async so the several-second announcement never blocks the session.
+    return {"type": "command", "command": announce, "args": [arg], "async": True}
+
+
+def wire(settings, announce):
+    """Add (or refresh) our Stop + Notification hooks, dropping any prior form
+    first so re-runs stay idempotent. Mutates and returns settings."""
+    hooks = settings.setdefault("hooks", {})
+    hooks["Stop"] = [e for e in hooks.get("Stop", []) if not is_ours(e, announce)]
+    hooks["Stop"].append({"hooks": [_hook(announce, "stop")]})
+    hooks["Notification"] = [
+        e for e in hooks.get("Notification", []) if not is_ours(e, announce)
+    ]
+    hooks["Notification"].append(
+        {"matcher": NOTIFICATION_MATCHER, "hooks": [_hook(announce, "notification")]}
+    )
+    return settings
+
+
+def unwire(settings):
+    """Remove our hooks (any form) from Stop + Notification, dropping an event
+    key entirely once it is empty. Returns True if anything changed."""
+    hooks = settings.get("hooks", {})
+    changed = False
+    for event in ("Stop", "Notification"):
+        entries = hooks.get(event)
+        if not entries:
+            continue
+        kept = [e for e in entries if not is_ours(e)]
+        if len(kept) != len(entries):
+            changed = True
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+    return changed
+
+
+def write_atomic(path, settings):
+    """Write via a temp sibling + os.replace so a crash mid-write can never
+    truncate settings.json; carry the original file mode over."""
+    tmp = path + ".tmp." + str(os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    try:
+        os.chmod(tmp, os.stat(path).st_mode)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def _backup(path):
+    dest = path + ".bak." + time.strftime("%Y%m%d-%H%M%S") + "." + str(os.getpid())
+    shutil.copy2(path, dest)
+    return dest
+
+
+def main(argv):
+    if len(argv) >= 4 and argv[1] == "wire":
+        repo, path = argv[2], argv[3]
+        announce = announce_path(repo)
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    settings = json.load(f)
+            except ValueError as e:
+                sys.exit("    " + path + " is not valid JSON (" + str(e) + "); fix it and re-run")
+            print("    backup: " + _backup(path))
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            settings = {}
+        wire(settings, announce)
+        write_atomic(path, settings)
+        print("    hooks.Stop and hooks.Notification now run " + announce + " (async)")
+        return 0
+
+    if len(argv) >= 3 and argv[1] == "unwire":
+        path = argv[2]
+        try:
+            with open(path) as f:
+                settings = json.load(f)
+        except ValueError as e:
+            sys.stderr.write("    " + path + " is not valid JSON (" + str(e) + ")\n")
+            return 2
+        if unwire(settings):
+            dest = _backup(path)
+            write_atomic(path, settings)
+            print("    removed claude-announce hooks (backup: " + dest + ")")
+        else:
+            print("    no claude-announce hooks found in " + path)
+        return 0
+
+    sys.stderr.write(
+        "usage: claude-announce-hooks.py wire <repo> <settings> | unwire <settings>\n"
+    )
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
