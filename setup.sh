@@ -209,8 +209,11 @@ if [ "${1:-}" = "--test" ]; then
         info "enabled terminals: (none recorded - announces in every terminal)"
     fi
     [ "$ok" = 1 ] || die "missing pieces above"
+    # sed -n '1p' (not head -1) so it reads the whole stream: head closes the
+    # pipe after one line, which SIGPIPEs sort (exit 141) and, under pipefail,
+    # aborts setup once there are enough transcripts to fill sort's buffer.
     transcript=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/memory/*' \
-        -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | sed -n '1p' | cut -d' ' -f2-)
     [ -n "$transcript" ] || die "no Claude transcripts found under ~/.claude/projects (run a claude session first)"
     info "announcing most recent transcript: $transcript"
     printf '{"transcript_path": "%s"}' "$transcript" \
@@ -230,41 +233,33 @@ fi
 # and hooks.Notification (other hooks untouched), then delete the runtime dir.
 # Does not restore any backup: backups may predate unrelated settings changes.
 if [ "${1:-}" = "--uninstall" ]; then
-    if [ -f "$SETTINGS" ] && command -v python3 >/dev/null 2>&1; then
-        python3 - "$SETTINGS" <<'PY'
-import json, shutil, sys, time
-
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        settings = json.load(f)
-except ValueError as e:
-    print("    " + path + " is not valid JSON (" + str(e) + ");")
-    print("    remove the claude-announce entries from hooks.Stop/hooks.Notification manually")
-    sys.exit(0)
-hooks = settings.get("hooks", {})
-changed = False
-for event in ("Stop", "Notification"):
-    entries = hooks.get(event)
-    if not entries:
-        continue
-    kept = [e for e in entries if "claude-announce" not in json.dumps(e)]
-    if len(kept) != len(entries):
-        changed = True
-        if kept:
-            hooks[event] = kept
-        else:
-            del hooks[event]
-if changed:
-    backup = path + ".bak." + time.strftime("%Y%m%d-%H%M%S")
-    shutil.copy2(path, backup)
-    with open(path, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-    print("    removed claude-announce hooks (backup: " + backup + ")")
-else:
-    print("    no claude-announce hooks found in " + path)
-PY
+    # Track whether the hooks were actually removed so we never report a clean
+    # uninstall while leaving live hooks behind: they keep firing in new
+    # sessions (and the command path survives in the repo even after $BASE is
+    # gone), so a false "uninstalled" is worse than a warning.
+    hooks_state="none"          # none | removed | manual
+    if [ -f "$SETTINGS" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            if python3 "$REPO/bin/claude-announce-hooks.py" unwire "$SETTINGS"; then
+                hooks_state="removed"
+            else
+                hooks_state="manual"
+            fi
+        else
+            hooks_state="manual"
+            info "python3 not found; cannot edit $SETTINGS automatically"
+        fi
+    fi
+    # Manual path: hook removal failed, so the hooks still point into this repo
+    # and would keep firing. Leave BOTH the runtime dir and the repo in place and
+    # exit nonzero - deleting them now would strand live hooks (and a missing
+    # enabled-terminals would make the tool announce everywhere, not less).
+    if [ "$hooks_state" = "manual" ]; then
+        info "WARNING: could not remove the claude-announce hooks from $SETTINGS."
+        info "They still point into this repo and will keep firing in new sessions."
+        info "Nothing was deleted. Remove the entries mentioning claude-announce under"
+        info "hooks.Stop and hooks.Notification, then delete $BASE and this repo by hand."
+        exit 1
     fi
     rm -rf "$BASE"
     info "removed $BASE"
@@ -321,23 +316,41 @@ if [ ! -x venv/bin/python ]; then
             || die "could not create a venv with $PYTHON; try  brew install python@3.12  and re-run"
     fi
 fi
-info "installing kokoro-onnx + soundfile into the venv"
+info "installing kokoro-onnx + soundfile into the venv (pinned, see requirements.txt)"
 if [ -n "$USE_UV" ]; then
-    uv pip install --quiet --python venv/bin/python kokoro-onnx soundfile \
+    uv pip install --quiet --python venv/bin/python -r "$REPO/requirements.txt" \
         || die "$PIP_HINT"
 else
     venv/bin/pip install --quiet --upgrade pip || die "pip self-upgrade failed (network?); re-run once fixed"
-    venv/bin/pip install --quiet kokoro-onnx soundfile || die "$PIP_HINT"
+    venv/bin/pip install --quiet -r "$REPO/requirements.txt" || die "$PIP_HINT"
 fi
 
+# Expected SHA-256 of each model file. These match the canonical kokoro-onnx
+# model-files-v1.0 release (cross-checked against the leonelhs/kokoro-thewh1teagle
+# Hugging Face mirror). Verifying the hash - not just that the file is nonempty -
+# catches a truncated/corrupted download or a tampered mirror before the file is
+# ever loaded.
+model_sha256() {
+    case "$1" in
+        kokoro-v1.0.onnx) echo "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5" ;;
+        voices-v1.0.bin)  echo "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d" ;;
+    esac
+}
+verify_sha256() { [ "$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')" = "$2" ]; }
+
 for f in kokoro-v1.0.onnx voices-v1.0.bin; do
-    if [ ! -s "$f" ]; then
-        info "downloading $f (kokoro-v1.0.onnx is ~310 MB; this can take a few minutes)"
-        curl -fL --retry 2 -# -o "$f.part" "$RELEASE/$f" \
-            || die "download of $f failed (network or proxy issue?); re-run ./setup.sh to retry"
-        [ -s "$f.part" ] || die "downloaded $f is empty; re-run ./setup.sh to retry"
-        mv "$f.part" "$f"
+    expected=$(model_sha256 "$f")
+    if [ -s "$f" ] && verify_sha256 "$f" "$expected"; then
+        continue                        # already present and intact
     fi
+    [ -s "$f" ] && info "$f present but checksum mismatched; re-downloading"
+    info "downloading $f (kokoro-v1.0.onnx is ~310 MB; this can take a few minutes)"
+    curl -fL --retry 2 -# -o "$f.part" "$RELEASE/$f" \
+        || die "download of $f failed (network or proxy issue?); re-run ./setup.sh to retry"
+    [ -s "$f.part" ] || { rm -f "$f.part"; die "downloaded $f is empty; re-run ./setup.sh to retry"; }
+    verify_sha256 "$f.part" "$expected" \
+        || { rm -f "$f.part"; die "$f failed SHA-256 verification (expected $expected); re-run ./setup.sh to retry"; }
+    mv "$f.part" "$f"
 done
 
 # 3. Apple Foundation Models summarizer --------------------------------------
@@ -384,48 +397,8 @@ choose_terminals "$PRESELECT"
 info "wiring hooks into $SETTINGS"
 WIRE_PY="${PYTHON:-python3}"
 [ -n "$USE_UV" ] && WIRE_PY="$BASE/venv/bin/python"
-"$WIRE_PY" - "$REPO" "$SETTINGS" <<'PY' || die "hook wiring failed; $SETTINGS was not modified"
-import json, os, shutil, sys, time
-
-repo, path = sys.argv[1], sys.argv[2]
-announce = os.path.join(repo, "bin", "claude-announce")
-
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            settings = json.load(f)
-    except ValueError as e:
-        sys.exit("    " + path + " is not valid JSON (" + str(e) + "); fix it and re-run")
-    backup = path + ".bak." + time.strftime("%Y%m%d-%H%M%S")
-    shutil.copy2(path, backup)
-    print("    backup: " + backup)
-else:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    settings = {}
-
-hooks = settings.setdefault("hooks", {})
-
-def keep(entry):
-    """Drop entries this setup owns or supersedes (idempotent re-runs)."""
-    blob = json.dumps(entry)
-    return "claude-announce" not in blob and "notify-unfocused.sh" not in blob
-
-stop = [e for e in hooks.get("Stop", []) if keep(e)]
-stop.append({"hooks": [{"type": "command", "command": announce + " stop"}]})
-hooks["Stop"] = stop
-
-notif = [e for e in hooks.get("Notification", []) if keep(e)]
-notif.append({
-    "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
-    "hooks": [{"type": "command", "command": announce + " notification"}],
-})
-hooks["Notification"] = notif
-
-with open(path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-print("    hooks.Stop and hooks.Notification now run " + announce)
-PY
+"$WIRE_PY" "$REPO/bin/claude-announce-hooks.py" wire "$REPO" "$SETTINGS" \
+    || die "hook wiring failed; $SETTINGS was not modified"
 
 info "done. Hooks apply to NEW claude sessions (running ones keep their old hook snapshot)."
 info "smoke test:  ./setup.sh --test"
