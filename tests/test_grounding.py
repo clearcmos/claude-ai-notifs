@@ -184,6 +184,51 @@ class GroundedRendering(unittest.TestCase):
         self.assertEqual(render.render(source, value),
                          "Claude investigated the request.")
 
+    def test_latest_request_can_ground_a_produced_topic(self):
+        source = (
+            "The cursor blinks, a patient friend,\n"
+            "through tangled logs and lines that bend.\n"
+            "A quiet chime, the work is done —\n"
+            "soft as dusk, and won."
+        )
+        value = assessment(
+            "produced",
+            "The cursor blinks, a patient friend",
+            "poem",
+        )
+        self.assertEqual(
+            render.render(source, value, topic_source="write 4 lines poem"),
+            "Claude created the requested poem.",
+        )
+
+    def test_reply_can_still_ground_topic_when_request_does_not(self):
+        source = "Here is a limerick about a compiler."
+        value = assessment("produced", "Here is a limerick", "limerick")
+        self.assertEqual(
+            render.render(source, value, topic_source="surprise me"),
+            "Claude created the requested limerick.",
+        )
+
+    def test_latest_request_is_never_outcome_evidence(self):
+        source = "I investigated the permissions. No changes were made."
+        value = assessment(
+            "changed",
+            "grant Maya access",
+            "Maya access",
+        )
+        self.assertEqual(
+            render.render(source, value, topic_source="grant Maya access"),
+            "Claude worked on Maya access.",
+        )
+
+    def test_produced_without_specific_topic_has_safe_wording(self):
+        source = "Blue light gathers where the quiet evening ends."
+        value = assessment("produced", "Blue light gathers", "sonnet")
+        self.assertEqual(
+            render.render(source, value, topic_source="make something creative"),
+            "Claude produced the requested content.",
+        )
+
     def test_force_neutral_overrides_supported_change(self):
         source = "Grant Maya access to Okta"
         value = assessment("changed", "Grant Maya access", "Maya access to Okta")
@@ -214,6 +259,26 @@ class GroundedRendering(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "Claude investigated Okta access.")
+
+    def test_cli_accepts_latest_request_as_topic_source_only(self):
+        source = "Morning opens slowly over rain-dark streets."
+        value = assessment("produced", "Morning opens slowly", "poem")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_MODULE_PATH),
+                "--topic-source",
+                "write a poem",
+                "--",
+                source,
+            ],
+            input=json.dumps(value),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "Claude created the requested poem.")
 
     def test_cli_extracts_hook_reply(self):
         result = subprocess.run(

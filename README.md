@@ -44,13 +44,16 @@ focus-capable terminal is queried directly (AppleScript, or its CLI) instead.
    transcript text as a compatibility fallback for older Claude Code versions.
 4. For a completed response, Apple's on-device foundation model (Apple
    Intelligence, macOS 26) produces a constrained status, exact evidence quote,
-   and extractive topic. Local code verifies those fields against Claude's reply,
-   requires explicit completed-action language before accepting `changed`, and
-   renders the spoken sentence from a fixed template. Unsupported claims become
-   neutral "Claude worked on..." wording. The user request is excluded whenever
-   a final reply exists, so an imperative request cannot be repeated as a
-   completed action. If the model is unavailable, `claude -p --model haiku`
-   produces the same assessment and passes through the same validator.
+   and extractive topic. It sees the latest user request for intent and topic
+   context, including whether the reply is requested generated content. Local
+   code verifies outcome evidence only against Claude's reply, while a topic may
+   be grounded in either the latest request or reply. It requires explicit
+   completed-action language before accepting `changed` and renders the spoken
+   sentence from a fixed template. Thus an imperative request can improve the
+   topic but can never prove its own completion. Unsupported claims become
+   neutral "Claude worked on..." wording. If the model is unavailable,
+   `claude -p --model haiku` produces the same assessment and passes through the
+   same validator.
    Pending-input notices continue to use direct one-sentence summarization.
 5. Kokoro TTS (af_heart voice, same as the Linux setup) synthesizes the
    sentence and `afplay` speaks it. Focus is re-checked before playback, and

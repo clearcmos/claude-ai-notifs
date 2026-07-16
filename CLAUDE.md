@@ -56,16 +56,20 @@ announce the same things.
   instruction forbids inferring outcomes from the request. The sibling Linux
   setup calls the same claude-announce-extract.py; keep the copies identical.
 - Grounded Stop announcements (2026-07-16): a Stop hook means the response
-  ended, not that the requested operation completed. When a reply exists, the
-  classifier sees ONLY that reply, never the imperative user request. The Swift
+  ended, not that the requested operation completed. The classifier sees the
+  latest user request for interaction type/topic context and the reply for
+  outcome evidence; it does not use earlier conversation turns. The Swift
   helper uses DynamicGenerationSchema (not @Generable macros: command-line
   Swift SDKs may omit the macro plugin) to return status + exact evidence + an
-  extractive topic with greedy sampling. claude-announce-render.py verifies the
-  evidence/topic against the reply (ordered ellipsis-separated evidence and
-  reordered already-present topic words are allowed), requires explicit
+  extractive topic with greedy sampling. claude-announce-render.py verifies
+  evidence only against the reply and topic against either the latest request
+  or reply (ordered ellipsis-separated evidence and reordered already-present
+  topic words are allowed), requires explicit
   completed-action grammar for `changed`, guards negative statuses and explicit
   negations, and renders a fixed template;
-  unsupported claims downgrade to neutral "worked on" wording. Haiku fallback
+  unsupported claims downgrade to neutral "worked on" wording. Requested
+  generated or rewritten content uses the separate `produced` status so a poem
+  is not mislabeled as an explanation. Haiku fallback
   produces the same JSON and passes through the same validator. With no recorded
   reply the status is forcibly neutral, and total model failure becomes the
   always-true "Claude finished responding" rather than an invented outcome.

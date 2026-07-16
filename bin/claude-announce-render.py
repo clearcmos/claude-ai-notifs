@@ -2,8 +2,9 @@
 """Validate a model assessment and render a conservative announcement.
 
 The model is allowed to classify and extract, but it never writes the final
-sentence.  Evidence and topic text must occur in the assistant reply; invalid
-or unsupported assessments are downgraded to neutral wording.  Stdlib only.
+sentence. Evidence must occur in the assistant reply; topic text may occur in
+the latest user request or reply. Invalid or unsupported assessments are
+downgraded to neutral wording. Stdlib only.
 """
 
 import argparse
@@ -16,6 +17,7 @@ STATUSES = {
     "changed",
     "investigated",
     "answered",
+    "produced",
     "proposed",
     "verified",
     "blocked",
@@ -185,10 +187,14 @@ def reply_from_hook(raw, limit=2600):
     return reply[:head] + "\n[...middle omitted...]\n" + reply[-tail:]
 
 
-def safe_topic(source, candidate):
+def safe_topic(sources, candidate):
     """Return a short extractive topic or a deterministic generic fallback."""
     candidate = normalize(candidate).strip(" \t\r\n\"'`.,:;!?-–—")
-    if not topic_occurs_in(source, candidate):
+    if isinstance(sources, str):
+        sources = (sources,)
+    if not any(
+        topic_occurs_in(source, candidate) for source in sources if source
+    ):
         return "the request"
     words = candidate.split()
     if not words or len(words) > 8 or len(candidate) > 90:
@@ -210,7 +216,7 @@ def supported_change(evidence):
 def supported_status(status, evidence):
     if status == "changed":
         return supported_change(evidence)
-    if status in {"investigated", "answered", "proposed", "verified"}:
+    if status in {"investigated", "answered", "produced", "proposed", "verified"}:
         # These do not assert that the user's requested mutation happened. Let
         # the constrained classifier distinguish them as long as its evidence
         # is grounded and does not explicitly negate the classified action.
@@ -225,14 +231,14 @@ def supported_status(status, evidence):
     return True
 
 
-def render(source, assessment, force_neutral=False):
+def render(source, assessment, force_neutral=False, topic_source=None):
     """Render from validated fields; return empty only for malformed JSON."""
     if not isinstance(assessment, dict):
         return ""
 
     status = normalize(assessment.get("status", "")).lower()
     evidence = normalize(assessment.get("evidence", ""))
-    topic = safe_topic(source, assessment.get("topic", ""))
+    topic = safe_topic((topic_source, source), assessment.get("topic", ""))
 
     if status not in STATUSES:
         status = "unknown"
@@ -247,12 +253,15 @@ def render(source, assessment, force_neutral=False):
         "changed": "Claude made changes to {topic}.",
         "investigated": "Claude investigated {topic}.",
         "answered": "Claude explained {topic}.",
+        "produced": "Claude created the requested {topic}.",
         "proposed": "Claude proposed next steps for {topic}.",
         "verified": "Claude verified {topic}.",
         "blocked": "Claude was blocked on {topic}.",
         "failed": "Claude encountered a problem with {topic}.",
         "unknown": "Claude worked on {topic}.",
     }
+    if status == "produced" and topic == "the request":
+        return "Claude produced the requested content."
     return templates[status].format(topic=topic)
 
 
@@ -260,6 +269,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("source", nargs="?", help="assistant reply used as grounding")
     parser.add_argument("--force-neutral", action="store_true")
+    parser.add_argument("--topic-source",
+                        help="latest user request used only to ground the topic")
     parser.add_argument("--hook-reply", action="store_true",
                         help="extract a bounded authoritative reply from hook JSON")
     args = parser.parse_args(argv)
@@ -269,7 +280,7 @@ def main(argv=None):
     if args.source is None:
         parser.error("source is required unless --hook-reply is used")
     assessment = parse_assessment(sys.stdin.read())
-    sentence = render(args.source, assessment, args.force_neutral)
+    sentence = render(args.source, assessment, args.force_neutral, args.topic_source)
     if sentence:
         sys.stdout.write(sentence)
     return 0
