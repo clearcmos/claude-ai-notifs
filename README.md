@@ -88,7 +88,7 @@ machine:
 
 - Apple Silicon Mac on macOS 26+
 - Xcode Command Line Tools (`xcode-select --install`) for `swiftc`
-- Python 3.10+ (`brew install python@3.12`) or `uv`, for the Kokoro venv
+- Python 3.12+ (`brew install python@3.12`) or `uv`, for the Kokoro venv
 - Claude Code CLI (already present if you run Claude sessions)
 - Apple Intelligence enabled in System Settings > Apple Intelligence & Siri
   (optional; without it the summarizer falls back to `claude -p`)
