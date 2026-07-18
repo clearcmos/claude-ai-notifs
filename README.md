@@ -338,9 +338,10 @@ already-running Claude sessions. On a fresh machine, `--log-on` performs normal
 setup and enables logging after installation succeeds. `--log-off` retains the
 log for review. The file and its flag are owner-only, under
 `~/.local/share/claude-ai-notifs`; the trace includes the exact spoken summary
-and may therefore contain transcript-derived information. Delete `debug.log`
-manually when the QA record is no longer needed. `CLAUDE_ANNOUNCE_DEBUG=1`
-remains an environment-level override.
+and may therefore contain transcript-derived information. The log rotates to
+`debug.log.1` once it exceeds 1 MiB, so an always-on toggle stays bounded.
+Delete `debug.log` manually when the QA record is no longer needed.
+`CLAUDE_ANNOUNCE_DEBUG=1` remains an environment-level override.
 
 The log shows the host terminal, gate/focus decisions on macOS, Linux foot queue
 and dispatch decisions, task and summary lengths, the summarizer used, and the

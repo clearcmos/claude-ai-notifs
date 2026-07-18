@@ -1,15 +1,21 @@
 #!/bin/bash
 # Concurrency test for the claude-announce audio lock (macOS lockf fd-locking).
 # Proves concurrent holders serialize and that a killed holder's lock is
-# released automatically by the kernel. Skips (exit 0) where lockf is absent
-# (e.g. Linux CI), matching audio_lock's own graceful degradation.
+# released automatically by the kernel. Skips (exit 0) only on Linux, whose
+# runtime serializes via flock in the foot dispatcher instead; on macOS the
+# entire serialization design rests on lockf, so its absence is a FAILURE, not
+# a skip - otherwise CI would stay green while lock coverage silently vanished.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$REPO/bin/claude-announce"
 
 if ! command -v lockf >/dev/null 2>&1; then
-    echo "SKIP: lockf not available (serialization degrades to a no-op here)"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "FAIL: lockf is missing on macOS; audio serialization would be a silent no-op" >&2
+        exit 1
+    fi
+    echo "SKIP: lockf not available (Linux serializes via flock in the foot dispatcher)"
     exit 0
 fi
 

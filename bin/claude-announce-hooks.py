@@ -9,7 +9,8 @@ setup.sh invokes:
     claude-announce-hooks.py unwire <settings-path>
 
 Exit codes: 0 = wired / unwired / nothing to unwire; 2 = settings.json is not
-valid JSON (the caller must then NOT claim success). Stdlib only.
+valid JSON or not an editable settings shape (the caller must then NOT claim
+success). Stdlib only.
 """
 
 import json
@@ -62,6 +63,41 @@ def is_ours(entry, announce=None):
         if os.path.basename(exe) == "claude-announce":
             return True
     return False
+
+
+def shape_error(settings):
+    """Explain why parsed settings cannot be edited safely, or return None.
+
+    Valid JSON is not necessarily a settings object (e.g. "hooks": []).
+    wire/unwire index into managed-event entries, so anything that is not
+    object -> event -> list of entry objects would crash mid-edit with a raw
+    traceback. Refusing up front mirrors the invalid-JSON path: the caller
+    must not claim success, and the file is left untouched.
+    """
+    if not isinstance(settings, dict):
+        return "top-level value is not an object"
+    hooks = settings.get("hooks")
+    if hooks is None:
+        return None
+    if not isinstance(hooks, dict):
+        return '"hooks" is not an object'
+    for event in MANAGED_EVENTS:
+        entries = hooks.get(event)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            return '"hooks.' + event + '" is not a list'
+        for index, entry in enumerate(entries):
+            label = '"hooks.' + event + "[" + str(index) + ']"'
+            if not isinstance(entry, dict):
+                return label + " is not an object"
+            inner = entry.get("hooks")
+            if inner is not None and (
+                not isinstance(inner, list)
+                or any(not isinstance(h, dict) for h in inner)
+            ):
+                return label + ' has a "hooks" value that is not a list of objects'
+    return None
 
 
 def _hook(announce, arg):
@@ -163,6 +199,9 @@ def main(argv):
                     settings = json.load(f)
             except ValueError as e:
                 sys.exit("    " + path + " is not valid JSON (" + str(e) + "); fix it and re-run")
+            error = shape_error(settings)
+            if error is not None:
+                sys.exit("    " + path + ": " + error + "; fix it and re-run")
             print("    backup: " + _backup(path))
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -180,6 +219,10 @@ def main(argv):
                 settings = json.load(f)
         except ValueError as e:
             sys.stderr.write("    " + path + " is not valid JSON (" + str(e) + ")\n")
+            return 2
+        error = shape_error(settings)
+        if error is not None:
+            sys.stderr.write("    " + path + ": " + error + "\n")
             return 2
         if unwire(settings):
             dest = _backup(path)

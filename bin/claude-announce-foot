@@ -14,12 +14,24 @@ BASE="${CLAUDE_ANNOUNCE_BASE:-$HOME/.local/share/claude-ai-notifs}"
 RUNTIME_PARENT="${XDG_RUNTIME_DIR:-$BASE}"
 SPOOL="${CLAUDE_ANNOUNCE_SPOOL:-$RUNTIME_PARENT/claude-ai-notifs}"
 DEBUG_LOG="$BASE/debug.log"
+DEBUG_LOG_MAX=1048576           # rotate the QA trace at 1 MiB (one prior kept)
+DBG_ROTATED=""
 TITLE="claude-ai-notifs"
 MAX_AGE=600
 AUDIO_LOCK_WAIT=180
 
 dbg() {
     { [ -n "${CLAUDE_ANNOUNCE_DEBUG:-}" ] || [ -e "$BASE/debug" ]; } || return 0
+    # Same rotation as the hook's dbg: cap the transcript-derived QA log at
+    # DEBUG_LOG_MAX, at most once per invocation, keeping one prior generation.
+    if [ -z "$DBG_ROTATED" ]; then
+        DBG_ROTATED=1
+        local size=""
+        [ -f "$DEBUG_LOG" ] && size=$(wc -c 2>/dev/null < "$DEBUG_LOG" | tr -d '[:space:]')
+        if [ "${size:-0}" -gt "$DEBUG_LOG_MAX" ] 2>/dev/null; then
+            mv -f "$DEBUG_LOG" "$DEBUG_LOG.1" 2>/dev/null
+        fi
+    fi
     [ -e "$DEBUG_LOG" ] && chmod 600 "$DEBUG_LOG" 2>/dev/null
     printf '%s [foot %s] %s\n' "$(date '+%H:%M:%S')" "$$" "$*" >> "$DEBUG_LOG" 2>/dev/null
 }
@@ -81,6 +93,20 @@ play_ding() {
         timeout 15 canberra-gtk-play -i bell >/dev/null 2>&1 && return 0
     fi
     return 1
+}
+
+# Bound and sanitize the spool summary. 4000 bytes is comfortably above any
+# legitimate summary (the hook caps at 300 characters), so the bound only
+# guards corrupt items - but a byte cut can split a multibyte character, so
+# iconv -c strips a dangling partial sequence rather than passing invalid
+# UTF-8 to notify-send. iconv may exit nonzero while still emitting the valid
+# prefix; only its output matters here.
+read_summary() {
+    if command -v iconv >/dev/null 2>&1; then
+        head -c 4000 "$1" 2>/dev/null | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
+    else
+        head -c 4000 "$1" 2>/dev/null
+    fi
 }
 
 audio_lock() {
@@ -158,7 +184,7 @@ dispatch_special() {
         return 0
     fi
 
-    summary=$(head -c 1000 "$item/summary.txt" 2>/dev/null)
+    summary=$(read_summary "$item/summary.txt")
     [ -n "$summary" ] || summary="Attention needed"
     wav="$item/announcement.wav"
     trap 'audio_unlock; rm -rf -- "$item"' EXIT

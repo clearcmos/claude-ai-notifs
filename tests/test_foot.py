@@ -112,6 +112,36 @@ class FootDeliveryTests(unittest.TestCase):
                 (base / "debug.log").read_text(),
             )
 
+    def test_oversized_multibyte_summary_stays_valid_utf8(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            env, spool, log = self.environment(root)
+            executable(root / "commands" / "canberra-gtk-play", "exit 1\n")
+            item = spool / "ready-UTF8"
+            item.mkdir(parents=True)
+            # 3999 ASCII bytes then two-byte characters: the dispatcher's
+            # 4000-byte read bound lands inside the first multibyte character,
+            # and the dangling lead byte must be stripped, never handed to
+            # notify-send as invalid UTF-8.
+            (item / "summary.txt").write_bytes(b"a" * 3999 + "é".encode() * 5)
+
+            result = subprocess.run(
+                [
+                    "bash", str(FOOT), "dispatch", "claude-ai-notifs", "ready-UTF8",
+                    "foot", "", "", "normal", "-1", "0", "false", "",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            raw = log.read_bytes()
+            self.assertIn(b"notify:", raw)
+            self.assertIn(b"a" * 3999, raw)
+            self.assertNotIn(b"\xc3", raw)
+            raw.decode("utf-8")  # must not raise
+
     def test_non_project_notifications_are_forwarded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

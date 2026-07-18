@@ -73,6 +73,8 @@ DING="/System/Library/Sounds/Glass.aiff"
 # setup.sh). Absent = installed before multi-terminal support; announce anywhere.
 ENABLED_FILE="$BASE/enabled-terminals"
 DEBUG_LOG="$BASE/debug.log"
+DEBUG_LOG_MAX=1048576           # rotate the QA trace at 1 MiB (one prior kept)
+DBG_ROTATED=""
 MODE="${1:-stop}"
 
 OLLAMA_HOST_VALUE="${CLAUDE_ANNOUNCE_OLLAMA_HOST:-${OLLAMA_HOST:-}}"
@@ -199,6 +201,17 @@ audio_unlock() {
 # so leaving calls in place costs nothing when disabled.
 dbg() {
     { [ -n "$CLAUDE_ANNOUNCE_DEBUG" ] || [ -e "$BASE/debug" ]; } || return 0
+    # The toggle can stay enabled for days and the log holds transcript-derived
+    # text, so cap growth: rotate to debug.log.1 at DEBUG_LOG_MAX, at most once
+    # per invocation so a chatty run cannot discard its own fresh trace.
+    if [ -z "$DBG_ROTATED" ]; then
+        DBG_ROTATED=1
+        local size=""
+        [ -f "$DEBUG_LOG" ] && size=$(wc -c 2>/dev/null < "$DEBUG_LOG" | tr -d '[:space:]')
+        if [ "${size:-0}" -gt "$DEBUG_LOG_MAX" ] 2>/dev/null; then
+            mv -f "$DEBUG_LOG" "$DEBUG_LOG.1" 2>/dev/null
+        fi
+    fi
     [ -e "$DEBUG_LOG" ] && chmod 600 "$DEBUG_LOG" 2>/dev/null
     printf '%s [%s %s] %s\n' "$(date '+%H:%M:%S')" "$MODE" "$$" "$*" >> "$DEBUG_LOG" 2>/dev/null
 }
@@ -379,8 +392,18 @@ fi
 dbg "task: ${#task} chars"
 is_pending_mode && dbg "pending input: [$task]"
 
+# Normalize a model sentence for speech: drop double quotes, collapse
+# whitespace, and cap at 300 CHARACTERS. A byte cap (head -c) can split a
+# multibyte character and hand invalid UTF-8 to TTS or notify-send, so the
+# cap runs in Python with locale-independent UTF-8 decoding. $PY is
+# guaranteed non-empty before any summarizer path runs.
 clean() {
-    tr -d '"' | tr '\n' ' ' | sed 's/^ *//; s/ *$//' | head -c 300
+    "$PY" -c '
+import sys
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+text = " ".join(text.replace("\"", "").split())
+sys.stdout.buffer.write(text[:300].encode("utf-8"))
+'
 }
 
 summary=""; via=""

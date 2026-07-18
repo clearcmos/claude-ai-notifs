@@ -7,7 +7,9 @@ idempotent wiring, migration off the old form, uninstall, and the atomic write.
 Stdlib only; no settings.json is touched except temp files this test creates.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -183,6 +185,65 @@ class Unwire(unittest.TestCase):
         s = {"hooks": {"Stop": [shell_entry("stop")]}}
         self.assertTrue(hooks.unwire(s))
         self.assertNotIn("Stop", s["hooks"])
+
+
+class ShapeRefusal(unittest.TestCase):
+    """Valid JSON with an uneditable shape is refused, never a traceback.
+
+    Regression: {"hooks": []} and {"hooks": {"Stop": "oops"}} both raised
+    AttributeError inside wire()/unwire(); the invalid-JSON path got a clean
+    fix-and-re-run message while these got a stack trace.
+    """
+
+    def test_editable_shapes_pass(self):
+        for settings in (
+            {},
+            {"hooks": {}},
+            {"hooks": {"Stop": []}},
+            {"hooks": {"Stop": [exec_entry()], "Unmanaged": "left alone"}},
+            hooks.wire({}, ANNOUNCE),
+        ):
+            self.assertIsNone(hooks.shape_error(settings))
+
+    def test_malformed_shapes_are_named(self):
+        cases = (
+            ([], "top-level"),
+            ({"hooks": []}, '"hooks"'),
+            ({"hooks": {"Stop": "oops"}}, "hooks.Stop"),
+            ({"hooks": {"PreToolUse": ["oops"]}}, "hooks.PreToolUse[0]"),
+            ({"hooks": {"Stop": [{"hooks": "oops"}]}}, "hooks.Stop[0]"),
+            ({"hooks": {"Stop": [{"hooks": ["oops"]}]}}, "hooks.Stop[0]"),
+        )
+        for settings, fragment in cases:
+            error = hooks.shape_error(settings)
+            self.assertIsNotNone(error, settings)
+            self.assertIn(fragment, error)
+
+    def test_wire_main_refuses_and_leaves_file_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            original = '{"hooks": []}\n'
+            with open(path, "w") as f:
+                f.write(original)
+            with self.assertRaises(SystemExit) as ctx:
+                hooks.main(["prog", "wire", "/repo", path])
+            self.assertIn("fix it and re-run", str(ctx.exception.code))
+            with open(path) as f:
+                self.assertEqual(f.read(), original)
+            self.assertEqual(os.listdir(d), ["settings.json"])  # no backup/temp
+
+    def test_unwire_main_returns_2_and_leaves_file_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            original = '{"hooks": {"Stop": "oops"}}\n'
+            with open(path, "w") as f:
+                f.write(original)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(hooks.main(["prog", "unwire", path]), 2)
+            self.assertIn("not a list", err.getvalue())
+            with open(path) as f:
+                self.assertEqual(f.read(), original)
+            self.assertEqual(os.listdir(d), ["settings.json"])
 
 
 class WriteAtomic(unittest.TestCase):

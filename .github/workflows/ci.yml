@@ -44,6 +44,8 @@ jobs:
           bash -n bin/claude-announce
           bash -n bin/claude-announce-foot
           bash -n bin/claude-announce-uninstall
+          bash -n tests/test_clean.sh
+          bash -n tests/test_debuglog.sh
           bash -n tests/test_lock.sh
           bash -n tests/test_playback.sh
           bash -n tests/test_terminal.sh
@@ -61,6 +63,8 @@ jobs:
             bin/claude-announce \
             bin/claude-announce-foot \
             bin/claude-announce-uninstall \
+            tests/test_clean.sh \
+            tests/test_debuglog.sh \
             tests/test_lock.sh \
             tests/test_playback.sh \
             tests/test_terminal.sh \
@@ -114,6 +118,8 @@ jobs:
           bash tests/test_temp.sh
           bash tests/test_lock.sh
           bash tests/test_playback.sh
+          bash tests/test_clean.sh
+          bash tests/test_debuglog.sh
 
       # Regression-test the universal hash lock on both production platforms:
       # build a venv with the runner's Python 3.12 (the lock's floor), install

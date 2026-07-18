@@ -173,6 +173,16 @@ announce the same things.
   "Claude Code" attribution because a silent banner does need a source. The
   Linux runtime test feeds a fake summary that still names Claude and asserts
   the played text is stripped.
+- UTF-8-safe summary bounds (2026-07-18, reproduced before fixing): clean() in
+  bin/claude-announce caps at 300 CHARACTERS via the already-required Python
+  ($PY is guaranteed before any summarizer path), replacing `head -c 300` - a
+  byte cap can split a multibyte character and hand invalid UTF-8 to TTS or
+  notify-send. The foot dispatcher's spool read (read_summary) allows 4000
+  bytes, comfortably above any legitimate summary, so the bound only guards
+  corrupt items, and strips a split multibyte tail with `iconv -c` when iconv
+  exists (iconv may exit nonzero while still emitting the valid prefix; only
+  its output is used). tests/test_clean.sh sources the real clean() and
+  test_foot.py drives a boundary-splitting spool item end to end.
 - Playback is serialized (2026-07-14): two sessions finishing at once used to
   talk over each other. audio_lock/audio_unlock in bin/claude-announce hold an
   exclusive macOS lockf(1) lock on an inherited fd (`exec 9>$BASE/audio.lock`;
@@ -311,7 +321,12 @@ the first shlex token. Match keys: exact announce path (when known), that
 executable basename == claude-announce (catches legacy repo installs), or the legacy
 notify-unfocused.sh. Writes are atomic (temp sibling + os.replace, mode
 preserved) so a crash cannot truncate the user's settings.json, and backups
-carry a pid suffix so same-second re-runs do not collide.
+carry a pid suffix so same-second re-runs do not collide. Valid JSON that is
+not an editable settings shape (non-object root or hooks, a non-list managed
+event, non-object entries - e.g. `"hooks": []`) is refused up front by
+shape_error with the same fix-and-re-run message and nonzero exit as invalid
+JSON, before any backup or write, instead of crashing mid-edit with a raw
+traceback (2026-07-18).
 
 Supply chain: the venv installs from the hash-locked `requirements.lock`
 (`--require-hashes`: full transitive tree, SHA-256 per artifact), generated from
@@ -333,7 +348,8 @@ upstream release ever re-cuts the model files, update the hash there.
 
 `--uninstall` never reports a clean removal it did not perform: on success it
 removes the hooks (atomically) and deletes $BASE; if settings.json is invalid
-JSON or both the installed venv and python3 are missing it leaves $BASE in place
+JSON (or valid JSON whose hooks shape cannot be safely edited) or both the
+installed venv and python3 are missing it leaves $BASE in place
 (the live hooks still point there), warns to remove the entries by hand, and
 exits nonzero. The standalone installed uninstaller has the same behavior.
 
@@ -345,7 +361,8 @@ and Notification payload extraction, including an unflushed transcript;
 `test_grounding.py` exercises assessment parsing, verbatim grounding,
 status-specific evidence gates, and investigation-versus-change regressions;
 `test_hooks.py` exercises claude-announce-hooks.py (structural matching including
-spaced exec paths, idempotence, legacy migration, uninstall, atomic write);
+spaced exec paths, idempotence, legacy migration, uninstall, atomic write, and
+malformed-shape refusal that leaves the file untouched);
 `test_install.py` exercises the atomic versioned runtime, repo independence,
 failed-upgrade rollback, permissions, and installed standalone uninstall;
 `test_focus.py` covers WezTerm/kitty focus parsing; `test_requirements.py` guards
@@ -364,9 +381,15 @@ tests host-terminal detection and precedence from the real shell function;
 `test_temp.sh` sources the real WAV allocation/cleanup functions and checks
 randomization plus 0700/0600 modes on BSD or GNU tools; `test_lock.sh` sources
 the real audio_lock/audio_unlock and proves concurrent workers serialize and a
-killed holder's lock auto-releases (self-skips where lockf is absent);
+killed holder's lock auto-releases (skips only on Linux, whose runtime uses
+flock in the foot dispatcher; a macOS host missing lockf FAILS the test, since
+a silent skip there would leave serialization uncovered behind a green build);
 `test_playback.sh` sources the real play_summary and proves the
-afplay -> say -> ding fallback order with stubbed players on any OS.
+afplay -> say -> ding fallback order with stubbed players on any OS;
+`test_clean.sh` sources the real clean() and proves the character cap never
+splits multibyte UTF-8; `test_debuglog.sh` sources the real dbg() and proves
+1 MiB rotation to debug.log.1 keeps one prior generation, runs at most once
+per invocation, and keeps the active log 0600.
 `.github/workflows/ci.yml` runs bash -n, py_compile, the unittests, and the lock
 test on both Linux and macOS, plus ShellCheck once on Linux (its analysis is
 platform-independent; intentional indirect-use findings are suppressed inline
@@ -391,7 +414,10 @@ Claude Code, not launched by hand), and it appends its decisions to
 pending-input detail, which summarizer produced the sentence, and the actual
 playback/notification result. This is how the "Ghostty
 dinged" report was traced to a one-off model cold-start rather than a bug.
-Remove the flag file to disable.
+Remove the flag file to disable. The log rotates to `debug.log.1` once it
+exceeds 1 MiB (checked at most once per invocation), so leaving the toggle
+enabled cannot grow an unbounded transcript-derived log; both generations stay
+0600.
 
 Public QA toggle: `setup.sh --log-on` and `setup.sh --log-off` are standalone
 actions. For an existing install they only create/remove `$BASE/debug`, tighten
