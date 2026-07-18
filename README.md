@@ -5,8 +5,9 @@ and foot on Linux/Wayland.
 When a Claude session finishes a turn or needs your input or permission while
 you are looking at another tab, window, or app, a synthesized voice tells you
 what happened ("Made changes to the failing authentication tests.") instead of
-a plain ding. The voice never names Claude: you already know who is speaking,
-so every word is spent on what happened.
+a plain ding. The voice never names Claude as the speaker: you already know who
+is speaking, so every word is spent on what happened. Grounded topics such as
+"Claude Code hooks" remain intact.
 
 On macOS you pick which installed terminals it runs in. Linux currently enables
 only foot. See the support matrix below.
@@ -55,7 +56,9 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
    reply. `bin/claude-announce-pending.py` reads pending-input details directly
    from each hook's authoritative event payload. This matters because Claude
    Code writes transcripts asynchronously: a visible `AskUserQuestion` dialog
-   can exist before its assistant/tool entry reaches the JSONL file.
+   can exist before its assistant/tool entry reaches the JSONL file. The
+   corresponding `PermissionRequest` for an `AskUserQuestion` is suppressed so
+   that one question produces only one announcement.
 4. For a completed response, Apple's on-device foundation model on macOS, or a
    configured Ollama endpoint on Linux, produces a constrained status,
    exact evidence quote,
@@ -66,7 +69,10 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
    completed-action language before accepting `changed` and renders the spoken
    sentence from a fixed template. Thus an imperative request can improve the
    topic but can never prove its own completion. Unsupported claims become
-   neutral "Worked on..." wording. If the model is unavailable,
+   neutral "Worked on..." wording. Likewise, the `produced` status is accepted
+   only when the latest request positively asks for generated or rewritten
+   content; a question that merely discusses generation cannot establish that
+   content was requested. If the model is unavailable,
    `claude -p --model haiku` produces the same assessment and passes through the
    same validator. Waiting/dependency replies and state recaps have distinct
    statuses, so a vague latest prompt can still produce a useful announcement
@@ -75,10 +81,13 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
    Ollama keeps the selected model in memory for five minutes after each
    generation request; the model remains installed on disk until removed from
    Ollama separately.
-5. Kokoro TTS with the af_heart voice synthesizes the sentence. macOS plays it
-   through `afplay`; Linux hands it to foot's unfocused-terminal dispatcher and
-   uses `paplay`, `pw-play`, or `aplay`. Playback is serialized across sessions
-   so concurrent completions speak one after another.
+5. Kokoro TTS with the af_heart voice synthesizes the sentence. macOS first
+   plays the Kokoro WAV through `afplay`; if synthesis or playback fails, it
+   falls back to the native `say` voice, then the Glass ding if `say` also
+   fails. Linux hands the WAV to foot's unfocused-terminal dispatcher and uses
+   `paplay`, `pw-play`, or `aplay`, with a built-in ding and desktop notification
+   as its fallback. Playback is serialized across sessions so concurrent
+   completions speak one after another.
 6. The voice stays quiet while the microphone is in use. macOS 14.4+ uses
    CoreAudio; Linux checks non-monitor capture streams through `pactl`. When a
    meeting, dictation session, or recording is active, the same grounded summary
@@ -89,9 +98,8 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
 
 Every stage degrades: a failed completed-turn assessment becomes the always-true
 "Finished responding" notification; a missing pending-input summary uses
-the plain Glass ding (a generic banner in a meeting); no Kokoro means the native
-`say` voice on macOS or the built-in ding/desktop notification on Linux. The
-hook always exits 0,
+the plain Glass ding (a generic banner in a meeting); and playback follows the
+platform fallback chains above. The hook always exits 0,
 so it can never fail a session, and setup wires it with `async: true`, so the
 several seconds of summarizing, synthesizing, and playback run in the background
 and never delay the next turn.
@@ -278,19 +286,25 @@ python3 -m unittest discover -s tests   # stdlib only; no install needed
 bash tests/test_terminal.sh             # host-terminal detection
 bash tests/test_temp.sh                 # private temporary WAV lifecycle
 bash tests/test_lock.sh                 # audio-lock concurrency
+bash tests/test_playback.sh             # macOS playback fallback chain
 ```
 
 They cover the transcript extractor (turn scoping, anti-hallucination,
 authoritative final-reply fallback, slash-command, and notification logic),
-the grounded renderer (verbatim evidence, conservative status validation,
-neutral fallback, and investigation-versus-completion regressions),
+authoritative pending-input payload extraction and duplicate-question
+suppression, the grounded renderer (verbatim evidence, conservative status
+validation, the generated-content request gate, neutral fallback, and
+investigation-versus-completion regressions),
 atomic runtime installation (source-checkout independence, safe upgrades, and
 standalone uninstall),
 settings.json hook wiring (structural
 matching, idempotence, migration, uninstall, and atomic writes), WezTerm/kitty
 focus parsing, host-terminal precedence, direct dependency source/lock
-consistency, private TTS output, and audio-lock serialization and kill-release
-behavior. CI runs
+consistency, private TTS output, macOS playback fallbacks, and audio-lock
+serialization and kill-release behavior. Linux coverage includes atomic foot
+configuration, tokenized OSC delivery and ordinary-notification forwarding,
+Ollama endpoint and generation behavior, the installed hook end to end,
+read-only setup preflight, and the public QA logging toggle. CI runs
 bash syntax checks, Python compilation, and the unit tests on Linux and macOS
 for pull requests and pushes to `main`. The lock test exercises `lockf` on
 macOS and self-skips where it is unavailable; ShellCheck runs once on Linux,
