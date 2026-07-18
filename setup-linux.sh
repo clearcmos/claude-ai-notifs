@@ -615,7 +615,9 @@ info "installing the self-contained runtime"
 INSTALLED_ROOT=$("$BASE/venv/bin/python" "$REPO/bin/claude-announce-install.py" "$REPO" "$BASE")
 ANNOUNCE="$INSTALLED_ROOT/bin/claude-announce"
 DISPATCHER="$INSTALLED_ROOT/bin/claude-announce-foot"
-[ -x "$ANNOUNCE" ] && [ -x "$DISPATCHER" ] || die "installed runtime is incomplete"
+if [ ! -x "$ANNOUNCE" ] || [ ! -x "$DISPATCHER" ]; then
+    die "installed runtime is incomplete"
+fi
 
 # Record the foot config path BEFORE modifying foot.ini: uninstall discovers
 # the managed block only through this record, and restore on an untouched
