@@ -88,6 +88,68 @@ _STATUS_EVIDENCE = {
         re.IGNORECASE,
     ),
 }
+# "produced" renders a creation claim ("produced the requested X"), so it gets
+# the same deterministic treatment as "changed", keyed on the other input: the
+# latest request must itself ask for content. The gate demands positive
+# request grammar - the content verb or noun must be governed by an imperative
+# or directive construction. Global content vocabulary combined with negative
+# question detection was bypassable from both sides ("Can you explain how this
+# generates a summary?" carried a directive marker that overrode question
+# detection; "Explain..." was never a question). With positive grammar, any
+# phrasing the regex fails to recognize downgrades to neutral "worked on"
+# wording: evasions fail safe, never toward a creation claim.
+#
+# Base verb forms only: imperatives and to-infinitives. Third-person forms
+# ("generates", "writes") describe existing behavior, never a directive, and
+# were exactly the observed bypass vector.
+_CONTENT_VERB = (
+    r"(?:write|draft|compose|generate|summari[sz]e|translate|rewrite|"
+    r"rephrase|reword|redraft|outline|brainstorm|condense|caption|"
+    r"come\s+up\s+with|make\s+up|make\s+(?:me\s+)?(?:some|something))"
+)
+_CONTENT_NOUN = (
+    r"(?:summar(?:y|ies)|poem|haiku|limerick|sonnet|slogan|tagline|lyrics|"
+    r"blurb|translation|outline|draft|caption)"
+)
+_ARTICLE_GAP = r"(?:(?:a|an|the|some)\s+)?(?:[\w'-]+\s+){0,2}"
+# Bare imperatives count ONLY at true line starts (^ under MULTILINE, with
+# an optional bullet marker requiring trailing whitespace and an optional
+# opening quote). Sentence punctuation is deliberately NOT a boundary:
+# colon-introduced quotations ('the docs say: "generate a summary"') read as
+# imperatives under any sentence-boundary rule (external review, rounds three
+# and four). The cost is that "Thanks. Write a summary." falls to neutral
+# wording, the direction this validator prefers. A standalone quoted phrase
+# as the whole request remains irreducibly ambiguous between a request and a
+# mention; it is accepted as a request by documented choice.
+_IMPERATIVE_CONTENT = re.compile(
+    r"^(?:[-*>]\s+)?[\"']?(?:please\s+)?(?:just\s+)?"
+    + _CONTENT_VERB + r"\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DIRECTED_CONTENT = re.compile(
+    r"\b(?:can|could|will|would)\s+you\s+(?:please\s+)?"
+    + _CONTENT_VERB + r"\b"
+    r"|\b(?:i|we)(?:'d\s+like|\s+would\s+like|\s+want|\s+need)\s+"
+    r"(?:you\s+to\s+|to\s+)?" + _CONTENT_VERB + r"\b"
+    r"|\b(?:give|send|make|get)\s+me\s+" + _ARTICLE_GAP + _CONTENT_NOUN + r"\b"
+    r"|\b(?:i|we)(?:'d\s+like|\s+would\s+like|\s+want|\s+need)\s+"
+    + _ARTICLE_GAP + _CONTENT_NOUN + r"\b"
+    r"|\bcan\s+i\s+(?:get|have)\s+" + _ARTICLE_GAP + _CONTENT_NOUN + r"\b",
+    re.IGNORECASE,
+)
+
+
+def content_request(request):
+    """True when the latest request itself asks for content to be produced."""
+    if not isinstance(request, str):
+        return False
+    # Collapse horizontal whitespace but keep line breaks: flattening
+    # newlines (as normalize does) would erase the very boundaries that make
+    # bullet and quote prefixes trustworthy.
+    text = "\n".join(" ".join(line.split()) for line in request.splitlines())
+    return bool(
+        _IMPERATIVE_CONTENT.search(text) or _DIRECTED_CONTENT.search(text)
+    )
 _NEGATED_STATUS_ACTION = re.compile(
     r"\b(?:could not|couldn't|did not|didn't|failed to|never|not|unable to)\s+"
     r"(?:analy[sz](?:e|ed)|answer(?:ed)?|audit(?:ed)?|check(?:ed)?|clarif(?:y|ied)|"
@@ -270,26 +332,32 @@ def render(source, assessment, force_neutral=False, topic_source=None):
         status = "unknown"
     elif not supported_status(status, evidence):
         status = "unknown"
+    elif status == "produced" and not content_request(topic_source):
+        # Reply evidence cannot distinguish supplied content from explanation,
+        # so the request must establish that content was asked for at all.
+        status = "unknown"
 
+    # The voice's only possible speaker is this assistant, so templates never
+    # name it (a real 2026-07-17 user preference): verb-first status readouts.
     templates = {
-        "changed": "Claude made changes to {topic}.",
-        "investigated": "Claude investigated {topic}.",
-        "answered": "Claude explained {topic}.",
-        "produced": "Claude created the requested {topic}.",
-        "proposed": "Claude proposed next steps for {topic}.",
-        "verified": "Claude verified {topic}.",
-        "waiting": "Claude is waiting on {topic}.",
-        "recapped": "Claude recapped {topic}.",
-        "blocked": "Claude was blocked on {topic}.",
-        "failed": "Claude encountered a problem with {topic}.",
-        "unknown": "Claude worked on {topic}.",
+        "changed": "Made changes to {topic}.",
+        "investigated": "Investigated {topic}.",
+        "answered": "Explained {topic}.",
+        "produced": "Produced the requested {topic}.",
+        "proposed": "Proposed next steps for {topic}.",
+        "verified": "Verified {topic}.",
+        "waiting": "Waiting on {topic}.",
+        "recapped": "Recapped {topic}.",
+        "blocked": "Blocked on {topic}.",
+        "failed": "Encountered a problem with {topic}.",
+        "unknown": "Worked on {topic}.",
     }
     if status == "produced" and topic == "the request":
-        return "Claude produced the requested content."
+        return "Produced the requested content."
     if status == "waiting" and topic == "the request":
-        return "Claude is waiting for the next step."
+        return "Waiting for the next step."
     if status == "recapped" and topic == "the request":
-        return "Claude recapped the current state."
+        return "Recapped the current state."
     return templates[status].format(topic=topic)
 
 

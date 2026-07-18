@@ -46,7 +46,7 @@ class GroundedRendering(unittest.TestCase):
             "Okta access",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude investigated Okta access.")
+                         "Investigated Okta access.")
 
     def test_false_changed_label_on_investigation_is_downgraded(self):
         source = "I investigated how Okta access is granted. No access was changed."
@@ -56,7 +56,7 @@ class GroundedRendering(unittest.TestCase):
             "Okta access",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude worked on Okta access.")
+                         "Worked on Okta access.")
 
     def test_explicit_completed_change_is_accepted(self):
         source = "I granted Maya access to Okta and verified her role."
@@ -66,7 +66,7 @@ class GroundedRendering(unittest.TestCase):
             "Maya access to Okta",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude made changes to Maya access to Okta.")
+                         "Made changes to Maya access to Okta.")
 
     def test_explicit_passive_change_is_accepted(self):
         source = "Maya's Workday access was granted and the ticket was updated."
@@ -76,7 +76,7 @@ class GroundedRendering(unittest.TestCase):
             "Maya's Workday access",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude made changes to Maya's Workday access.")
+                         "Made changes to Maya's Workday access.")
 
     def test_general_description_of_how_access_is_granted_is_not_a_change(self):
         source = "I found that access is granted through the administrators group."
@@ -86,7 +86,7 @@ class GroundedRendering(unittest.TestCase):
             "access",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude worked on access.")
+                         "Worked on access.")
 
     def test_negated_change_is_not_accepted(self):
         source = "I did not update production; I only documented the procedure."
@@ -96,13 +96,13 @@ class GroundedRendering(unittest.TestCase):
             "production",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude worked on production.")
+                         "Worked on production.")
 
     def test_evidence_must_come_from_source(self):
         source = "I reviewed the deployment instructions."
         value = assessment("verified", "All deployment tests passed", "deployment")
         self.assertEqual(render.render(source, value),
-                         "Claude worked on deployment.")
+                         "Worked on deployment.")
 
     def test_ordered_ellipsis_evidence_is_grounded(self):
         source = (
@@ -116,7 +116,7 @@ class GroundedRendering(unittest.TestCase):
             "skill on origin/main",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude verified skill on origin/main.")
+                         "Verified skill on origin/main.")
 
     def test_ellipsis_evidence_fragments_must_remain_in_order(self):
         source = "First the configuration was checked. Then the tests passed."
@@ -126,7 +126,7 @@ class GroundedRendering(unittest.TestCase):
             "configuration",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude worked on configuration.")
+                         "Worked on configuration.")
 
     def test_status_must_be_supported_by_its_evidence(self):
         source = "I explained the access steps, but did not perform them."
@@ -136,37 +136,37 @@ class GroundedRendering(unittest.TestCase):
             "access steps",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude worked on access steps.")
+                         "Worked on access steps.")
 
     def test_verified_status_with_matching_evidence_is_accepted(self):
         source = "I verified the Admin role after updating the account."
         value = assessment("verified", "I verified the Admin role", "Admin role")
         self.assertEqual(render.render(source, value),
-                         "Claude verified Admin role.")
+                         "Verified Admin role.")
 
     def test_negated_verification_is_not_accepted(self):
         source = "I did not verify the production deployment."
         value = assessment("verified", "did not verify", "production deployment")
         self.assertEqual(render.render(source, value),
-                         "Claude worked on production deployment.")
+                         "Worked on production deployment.")
 
     def test_no_error_is_not_rendered_as_failure(self):
         source = "The checks completed without errors."
         value = assessment("failed", "without errors", "checks")
         self.assertEqual(render.render(source, value),
-                         "Claude worked on checks.")
+                         "Worked on checks.")
 
     def test_not_blocked_is_not_rendered_as_blocked(self):
         source = "The migration is not blocked."
         value = assessment("blocked", "not blocked", "migration")
         self.assertEqual(render.render(source, value),
-                         "Claude worked on migration.")
+                         "Worked on migration.")
 
     def test_topic_must_come_from_source(self):
         source = "I investigated the authentication flow."
         value = assessment("investigated", "investigated", "production database")
         self.assertEqual(render.render(source, value),
-                         "Claude investigated the request.")
+                         "Investigated the request.")
 
     def test_topic_can_reorder_grounded_words(self):
         source = "The comparison covers pricing for OneLogin versus Okta."
@@ -176,13 +176,13 @@ class GroundedRendering(unittest.TestCase):
             "OneLogin and Okta pricing",
         )
         self.assertEqual(render.render(source, value),
-                         "Claude explained OneLogin and Okta pricing.")
+                         "Explained OneLogin and Okta pricing.")
 
     def test_topic_cannot_introduce_an_unsupported_word(self):
         source = "I investigated the authentication flow."
         value = assessment("investigated", "investigated", "production flow")
         self.assertEqual(render.render(source, value),
-                         "Claude investigated the request.")
+                         "Investigated the request.")
 
     def test_latest_request_can_ground_a_produced_topic(self):
         source = (
@@ -198,15 +198,189 @@ class GroundedRendering(unittest.TestCase):
         )
         self.assertEqual(
             render.render(source, value, topic_source="write 4 lines poem"),
-            "Claude created the requested poem.",
+            "Produced the requested poem.",
         )
 
-    def test_reply_can_still_ground_topic_when_request_does_not(self):
+    def test_produced_without_content_request_downgrades_neutrally(self):
+        # The request never asked for content, so even reply-grounded evidence
+        # may not render a creation claim; the reply still grounds the topic.
         source = "Here is a limerick about a compiler."
         value = assessment("produced", "Here is a limerick", "limerick")
         self.assertEqual(
             render.render(source, value, topic_source="surprise me"),
-            "Claude created the requested limerick.",
+            "Worked on limerick.",
+        )
+
+    def test_explaining_existing_feature_is_not_produced(self):
+        # Regression: llama3.2:3b labeled a feature explanation "produced" and
+        # the old template announced "Claude created the requested codebase."
+        source = (
+            "Yes. The QA logging is the setup.sh --log-on / --log-off pair, "
+            "added on this branch along with its test."
+        )
+        value = assessment(
+            "produced",
+            "The QA logging is the setup.sh --log-on / --log-off pair",
+            "codebase",
+        )
+        self.assertEqual(
+            render.render(
+                source,
+                value,
+                topic_source=(
+                    "This codebase now has a way to log responses for QA "
+                    "purposes. Do you see that?"
+                ),
+            ),
+            "Worked on codebase.",
+        )
+
+    def test_question_about_generating_is_not_a_content_request(self):
+        # Reviewer-reported bypass: content vocabulary inside a question about
+        # existing behavior must not license a "produced" creation claim.
+        source = "This function generates a summary of the changes."
+        value = assessment(
+            "produced", "This function generates a summary", "summary"
+        )
+        self.assertEqual(
+            render.render(
+                source,
+                value,
+                topic_source="Does this function generate a summary?",
+            ),
+            "Worked on summary.",
+        )
+
+    def test_question_about_writing_is_not_a_content_request(self):
+        source = "By default it writes the report to /var/log nightly."
+        value = assessment(
+            "produced", "it writes the report to /var/log", "report"
+        )
+        self.assertEqual(
+            render.render(
+                source, value, topic_source="Where does it write the report?"
+            ),
+            "Worked on report.",
+        )
+
+    def test_directive_explain_is_not_a_content_request(self):
+        # Round-two reviewer bypasses: a directive marker must govern the
+        # content verb itself, not merely coexist with content vocabulary.
+        source = "It builds the tree, then generates a summary of the changes."
+        value = assessment(
+            "produced", "generates a summary of the changes", "summary"
+        )
+        for request in (
+            "Can you explain how this function generates a summary?",
+            "Please explain how this function generates a summary.",
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(
+                    render.render(source, value, topic_source=request),
+                    "Worked on summary.",
+                )
+
+    def test_i_need_to_know_is_not_a_content_request(self):
+        source = "By default it writes the report to /var/log nightly."
+        value = assessment(
+            "produced", "it writes the report to /var/log", "report"
+        )
+        self.assertEqual(
+            render.render(
+                source,
+                value,
+                topic_source="I need to know where it writes the report.",
+            ),
+            "Worked on report.",
+        )
+
+    def test_directed_content_verbs_still_render_produced(self):
+        source = "Dawn code compiles in silence."
+        value = assessment("produced", "Dawn code compiles in silence", "poem")
+        for request in (
+            "I need you to write a poem",
+            "we want a poem for the launch page",
+            "can I get a haiku? make it a poem about spring",
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(
+                    render.render(source, value, topic_source=request),
+                    "Produced the requested poem.",
+                )
+
+    def test_quoted_or_hyphenated_verbs_are_not_imperatives(self):
+        # Round-three reviewer bypasses: quotes and bullet markers count only
+        # at a real line or sentence boundary, and a bullet needs following
+        # whitespace, so hyphenated words and quoted names never match.
+        source = "Yes. The nightly job runs it and writes the report."
+        value = assessment("produced", "writes the report", "report")
+        for request in (
+            'Does the "write report" command run nightly?',
+            "Does the 'generate summary' option use the diff?",
+            "Does the read-write path generate a report?",
+            "Does auto-generate produce a summary here?",
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(
+                    render.render(source, value, topic_source=request),
+                    "Worked on report.",
+                )
+
+    def test_colon_introduced_quotations_are_not_imperatives(self):
+        # Round-four reviewer bypasses: sentence punctuation is not an
+        # imperative boundary, so colon-introduced quotations and embedded
+        # instructions stay neutral. "Thanks. write a summary." falling
+        # neutral is the documented false-negative cost of that choice.
+        source = "Yes. It writes a summary after each run."
+        value = assessment("produced", "writes a summary", "summary")
+        for request in (
+            'Why does the prompt say: "generate a summary"?',
+            'Does it invoke this command: "write report"?',
+            "The documentation says: write a summary after each run. "
+            "Is that current?",
+            "Thanks for checking. write a summary of it.",
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(
+                    render.render(source, value, topic_source=request),
+                    "Worked on summary.",
+                )
+
+    def test_bulleted_and_quoted_requests_still_render_produced(self):
+        source = "Silver rain writes on the window."
+        value = assessment("produced", "Silver rain writes", "poem")
+        for request in (
+            "things to do:\n- write a poem about rain",
+            '"write a poem about rain"',
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(
+                    render.render(source, value, topic_source=request),
+                    "Produced the requested poem.",
+                )
+
+    def test_question_shaped_directive_still_renders_produced(self):
+        source = "Roses bloom in quiet code."
+        value = assessment("produced", "Roses bloom in quiet code", "poem")
+        self.assertEqual(
+            render.render(
+                source, value, topic_source="can you write a poem?"
+            ),
+            "Produced the requested poem.",
+        )
+
+    def test_summary_request_still_renders_produced(self):
+        source = "The sprint delivered the parser and the cache layer."
+        value = assessment(
+            "produced",
+            "delivered the parser and the cache layer",
+            "sprint summary",
+        )
+        self.assertEqual(
+            render.render(
+                source, value, topic_source="give me a summary of the sprint"
+            ),
+            "Produced the requested sprint summary.",
         )
 
     def test_latest_request_is_never_outcome_evidence(self):
@@ -218,7 +392,7 @@ class GroundedRendering(unittest.TestCase):
         )
         self.assertEqual(
             render.render(source, value, topic_source="grant Maya access"),
-            "Claude worked on Maya access.",
+            "Worked on Maya access.",
         )
 
     def test_produced_without_specific_topic_has_safe_wording(self):
@@ -226,7 +400,7 @@ class GroundedRendering(unittest.TestCase):
         value = assessment("produced", "Blue light gathers", "sonnet")
         self.assertEqual(
             render.render(source, value, topic_source="make something creative"),
-            "Claude produced the requested content.",
+            "Produced the requested content.",
         )
 
     def test_vague_request_can_use_reply_topic_for_waiting(self):
@@ -245,7 +419,7 @@ class GroundedRendering(unittest.TestCase):
                 value,
                 topic_source="I will wait until tomorrow to see",
             ),
-            "Claude is waiting on the reviewer.",
+            "Waiting on the reviewer.",
         )
 
     def test_state_summary_is_rendered_as_recap(self):
@@ -253,7 +427,7 @@ class GroundedRendering(unittest.TestCase):
         value = assessment("recapped", "Current state", "deployment")
         self.assertEqual(
             render.render(source, value, topic_source="okay"),
-            "Claude recapped deployment.",
+            "Recapped deployment.",
         )
 
     def test_generic_waiting_topic_uses_status_specific_fallback(self):
@@ -261,7 +435,7 @@ class GroundedRendering(unittest.TestCase):
         value = assessment("waiting", "waiting for external approval", "request")
         self.assertEqual(
             render.render(source, value, topic_source="I'll wait"),
-            "Claude is waiting for the next step.",
+            "Waiting for the next step.",
         )
 
     def test_waiting_requires_dependency_evidence(self):
@@ -269,7 +443,7 @@ class GroundedRendering(unittest.TestCase):
         value = assessment("waiting", "The cursor blinks", "poem")
         self.assertEqual(
             render.render(source, value, topic_source="write a poem"),
-            "Claude worked on poem.",
+            "Worked on poem.",
         )
 
     def test_negated_waiting_is_not_accepted(self):
@@ -281,7 +455,7 @@ class GroundedRendering(unittest.TestCase):
         )
         self.assertEqual(
             render.render(source, value),
-            "Claude worked on deployment.",
+            "Worked on deployment.",
         )
 
     def test_generic_recap_topic_uses_status_specific_fallback(self):
@@ -289,14 +463,14 @@ class GroundedRendering(unittest.TestCase):
         value = assessment("recapped", "Here is a recap", "task")
         self.assertEqual(
             render.render(source, value, topic_source="thanks"),
-            "Claude recapped the current state.",
+            "Recapped the current state.",
         )
 
     def test_force_neutral_overrides_supported_change(self):
         source = "Grant Maya access to Okta"
         value = assessment("changed", "Grant Maya access", "Maya access to Okta")
         self.assertEqual(render.render(source, value, force_neutral=True),
-                         "Claude worked on Maya access to Okta.")
+                         "Worked on Maya access to Okta.")
 
     def test_malformed_assessment_is_empty_for_model_fallback(self):
         self.assertEqual(render.render("source", None), "")
@@ -321,7 +495,7 @@ class GroundedRendering(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "Claude investigated Okta access.")
+        self.assertEqual(result.stdout, "Investigated Okta access.")
 
     def test_cli_accepts_latest_request_as_topic_source_only(self):
         source = "Morning opens slowly over rain-dark streets."
@@ -341,7 +515,7 @@ class GroundedRendering(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "Claude created the requested poem.")
+        self.assertEqual(result.stdout, "Produced the requested poem.")
 
     def test_cli_extracts_hook_reply(self):
         result = subprocess.run(

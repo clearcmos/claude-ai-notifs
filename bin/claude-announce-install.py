@@ -19,9 +19,14 @@ import time
 
 RUNTIME_FILES = (
     "claude-announce",
+    "claude-announce-ding.py",
     "claude-announce-extract.py",
+    "claude-announce-foot",
+    "claude-announce-foot-config.py",
     "claude-announce-focus.py",
     "claude-announce-hooks.py",
+    "claude-announce-ollama.py",
+    "claude-announce-pending.py",
     "claude-announce-render.py",
     "claude-announce-tts.py",
     "claude-announce-uninstall",

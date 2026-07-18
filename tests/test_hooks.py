@@ -83,8 +83,17 @@ class Wire(unittest.TestCase):
         self.assertEqual(stop["command"], ANNOUNCE)
         self.assertEqual(stop["args"], ["stop"])
         self.assertIs(stop["async"], True)
+        ask = s["hooks"]["PreToolUse"][0]
+        self.assertEqual(ask["matcher"], "^AskUserQuestion$")
+        self.assertEqual(ask["hooks"][0]["args"], ["ask"])
+        self.assertIs(ask["hooks"][0]["async"], True)
+        permission = s["hooks"]["PermissionRequest"][0]
+        self.assertNotIn("matcher", permission)
+        self.assertEqual(permission["hooks"][0]["args"], ["permission"])
+        self.assertIs(permission["hooks"][0]["async"], True)
         notif = s["hooks"]["Notification"][0]
-        self.assertIn("permission_prompt", notif["matcher"])
+        self.assertNotIn("permission_prompt", notif["matcher"])
+        self.assertIn("elicitation_dialog", notif["matcher"])
         self.assertEqual(notif["hooks"][0]["args"], ["notification"])
         self.assertIs(notif["hooks"][0]["async"], True)
 
@@ -92,8 +101,8 @@ class Wire(unittest.TestCase):
         s = {}
         for _ in range(3):
             hooks.wire(s, ANNOUNCE)
-        self.assertEqual(len(s["hooks"]["Stop"]), 1)
-        self.assertEqual(len(s["hooks"]["Notification"]), 1)
+        for event in hooks.MANAGED_EVENTS:
+            self.assertEqual(len(s["hooks"][event]), 1)
 
     def test_preserves_unrelated_hooks(self):
         s = {"hooks": {
@@ -104,7 +113,12 @@ class Wire(unittest.TestCase):
         stop_cmds = [h["command"] for e in s["hooks"]["Stop"] for h in e["hooks"]]
         self.assertIn("make notify", stop_cmds)
         self.assertIn(ANNOUNCE, stop_cmds)
-        self.assertEqual(len(s["hooks"]["PreToolUse"]), 1)  # untouched
+        pretool_cmds = [
+            h["command"]
+            for entry in s["hooks"]["PreToolUse"]
+            for h in entry["hooks"]
+        ]
+        self.assertEqual(pretool_cmds, ["echo keep", ANNOUNCE])
 
     def test_migrates_legacy_forms(self):
         s = {"hooks": {
@@ -127,8 +141,32 @@ class Unwire(unittest.TestCase):
     def test_removes_and_drops_empty_event(self):
         s = hooks.wire({}, ANNOUNCE)
         self.assertTrue(hooks.unwire(s))
-        self.assertNotIn("Stop", s["hooks"])
-        self.assertNotIn("Notification", s["hooks"])
+        for event in hooks.MANAGED_EVENTS:
+            self.assertNotIn(event, s["hooks"])
+
+    def test_removes_all_managed_hooks_and_keeps_unrelated_entries(self):
+        s = hooks.wire({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Write",
+                    "hooks": [{"type": "command", "command": "format-file"}],
+                }],
+                "PermissionRequest": [{
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": "audit-permission"}],
+                }],
+            }
+        }, ANNOUNCE)
+        self.assertTrue(hooks.unwire(s))
+        self.assertEqual(len(s["hooks"]["PreToolUse"]), 1)
+        self.assertEqual(len(s["hooks"]["PermissionRequest"]), 1)
+        self.assertEqual(
+            s["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "format-file"
+        )
+        self.assertEqual(
+            s["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+            "audit-permission",
+        )
 
     def test_keeps_unrelated(self):
         s = {"hooks": {"Stop": [exec_entry(), {"hooks": [{"type": "command", "command": "keepme"}]}]}}
@@ -173,6 +211,22 @@ class WriteAtomic(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
             # no temp files left behind
             self.assertEqual([n for n in os.listdir(d) if ".tmp." in n], [])
+
+    def test_symlinked_settings_target_is_replaced_without_breaking_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            target = root / "dotfiles" / "settings.json"
+            target.parent.mkdir()
+            target.write_text("{}\n")
+            link = root / ".claude" / "settings.json"
+            link.parent.mkdir()
+            link.symlink_to(target)
+
+            hooks.write_atomic(str(link), {"hooks": {"Stop": []}})
+
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(json.loads(target.read_text()), {"hooks": {"Stop": []}})
+            self.assertEqual([p for p in target.parent.iterdir() if ".tmp." in p.name], [])
 
 
 if __name__ == "__main__":
