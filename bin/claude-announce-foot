@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# Linux foot delivery adapter.
+#
+# The hook calls `enqueue` after synthesis. It stores a private tokenized item
+# and writes an OSC 777 notification to the originating pty. Both upstream foot
+# and the tabbed fork suppress their desktop-notification command when that
+# exact terminal object has keyboard focus. When unfocused, foot invokes
+# `dispatch`, which consumes the queued item and plays it.
+
+set -u
+umask 077
+
+BASE="${CLAUDE_ANNOUNCE_BASE:-$HOME/.local/share/claude-ai-notifs}"
+RUNTIME_PARENT="${XDG_RUNTIME_DIR:-$BASE}"
+SPOOL="${CLAUDE_ANNOUNCE_SPOOL:-$RUNTIME_PARENT/claude-ai-notifs}"
+DEBUG_LOG="$BASE/debug.log"
+TITLE="claude-ai-notifs"
+MAX_AGE=600
+AUDIO_LOCK_WAIT=180
+
+dbg() {
+    { [ -n "${CLAUDE_ANNOUNCE_DEBUG:-}" ] || [ -e "$BASE/debug" ]; } || return 0
+    [ -e "$DEBUG_LOG" ] && chmod 600 "$DEBUG_LOG" 2>/dev/null
+    printf '%s [foot %s] %s\n' "$(date '+%H:%M:%S')" "$$" "$*" >> "$DEBUG_LOG" 2>/dev/null
+}
+
+prepare_spool() {
+    mkdir -p "$SPOOL" 2>/dev/null || return 1
+    [ -d "$SPOOL" ] && [ ! -L "$SPOOL" ] || return 1
+    chmod 700 "$SPOOL" 2>/dev/null || return 1
+}
+
+cleanup_stale() {
+    prepare_spool || return 0
+    find "$SPOOL" -mindepth 1 -maxdepth 1 -type d \
+        \( -name 'ready-*' -o -name '.playing.*' \) \
+        -mmin +10 -exec rm -rf -- {} + 2>/dev/null || true
+}
+
+mic_busy() {
+    command -v pactl >/dev/null 2>&1 || return 1
+    local monitors source monitor is_monitor
+    monitors=$(pactl list short sources 2>/dev/null \
+        | awk '$2 ~ /\.monitor$/ {print $1}')
+    for source in $(pactl list source-outputs 2>/dev/null \
+        | awk '$1 == "Source:" {print $2}'); do
+        is_monitor=""
+        for monitor in $monitors; do
+            [ "$source" = "$monitor" ] && { is_monitor=1; break; }
+        done
+        [ -n "$is_monitor" ] || return 0
+    done
+    return 1
+}
+
+notify_summary() {
+    local message="$1"
+    command -v notify-send >/dev/null 2>&1 || return 1
+    notify-send --app-name="Claude Code" --hint=boolean:suppress-sound:true \
+        "Claude Code" "$message" >/dev/null 2>&1
+}
+
+play_file() {
+    local path="$1"
+    if command -v paplay >/dev/null 2>&1; then
+        timeout 30 paplay "$path" >/dev/null 2>&1
+    elif command -v pw-play >/dev/null 2>&1; then
+        timeout 30 pw-play "$path" >/dev/null 2>&1
+    elif command -v aplay >/dev/null 2>&1; then
+        timeout 30 aplay -q "$path" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+play_ding() {
+    if [ -s "$BASE/ding.wav" ]; then
+        play_file "$BASE/ding.wav" && return 0
+    fi
+    if command -v canberra-gtk-play >/dev/null 2>&1; then
+        timeout 15 canberra-gtk-play -i bell >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+audio_lock() {
+    mkdir -p "$BASE" 2>/dev/null || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"$BASE/audio.lock" 2>/dev/null || return 0
+    flock -x -w "$AUDIO_LOCK_WAIT" 9 2>/dev/null || exec 9>&-
+}
+
+audio_unlock() {
+    exec 9>&- 2>/dev/null || true
+}
+
+enqueue() {
+    local mode="${1:-stop}" summary="${2:-}" source_wav="${3:-}" tty="${4:-}"
+    local pending suffix token ready tty_path
+
+    [[ "$tty" =~ ^pts/[0-9]+$ ]] \
+        || { dbg "enqueue rejected invalid tty '$tty'"; return 1; }
+    [ -n "$summary" ] || summary="Attention needed"
+    prepare_spool || return 1
+    cleanup_stale
+
+    pending=$(mktemp -d "$SPOOL/.pending.XXXXXX" 2>/dev/null) || return 1
+    chmod 700 "$pending" 2>/dev/null || { rm -rf -- "$pending"; return 1; }
+    printf '%s' "$summary" > "$pending/summary.txt" || { rm -rf -- "$pending"; return 1; }
+    printf '%s' "$mode" > "$pending/mode" || { rm -rf -- "$pending"; return 1; }
+    if [ -n "$source_wav" ] && [ -s "$source_wav" ]; then
+        mv "$source_wav" "$pending/announcement.wav" 2>/dev/null \
+            || cp "$source_wav" "$pending/announcement.wav" 2>/dev/null \
+            || { rm -rf -- "$pending"; return 1; }
+        chmod 600 "$pending/announcement.wav" 2>/dev/null || true
+    fi
+
+    suffix=${pending##*.pending.}
+    token="ready-$suffix"
+    ready="$SPOOL/$token"
+    mv "$pending" "$ready" 2>/dev/null || { rm -rf -- "$pending"; return 1; }
+
+    # setup.sh --test promises an audible end-to-end test even when launched
+    # from the currently focused tab. Bypass foot only for that explicit test
+    # knob; normal hooks always take the OSC path below.
+    if [ -n "${CLAUDE_ANNOUNCE_FORCE:-}" ]; then
+        dispatch_special "$token"
+        return $?
+    fi
+
+    tty_path="/dev/$tty"
+    [ -z "${CLAUDE_ANNOUNCE_TTY_FILE:-}" ] || tty_path="$CLAUDE_ANNOUNCE_TTY_FILE"
+    if ! { printf '\033]777;notify;%s;%s\033' "$TITLE" "$token"; printf '\134'; } \
+        > "$tty_path" 2>/dev/null; then
+        rm -rf -- "$ready"
+        dbg "enqueue could not write OSC 777 to $tty_path"
+        return 1
+    fi
+    dbg "queued $token for $tty"
+    return 0
+}
+
+dispatch_special() {
+    local token="$1" item claimed now mtime summary wav
+    [[ "$token" =~ ^ready-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    prepare_spool || return 1
+    item="$SPOOL/$token"
+    [ -d "$item" ] && [ ! -L "$item" ] || return 1
+    claimed="$SPOOL/.playing.$$.$token"
+    mv "$item" "$claimed" 2>/dev/null || return 1
+    item="$claimed"
+
+    now=$(date +%s)
+    mtime=$(stat -c %Y "$item" 2>/dev/null || printf '0')
+    if [ $((now - mtime)) -gt "$MAX_AGE" ]; then
+        rm -rf -- "$item"
+        dbg "discarded stale $token"
+        return 0
+    fi
+
+    summary=$(head -c 1000 "$item/summary.txt" 2>/dev/null)
+    [ -n "$summary" ] || summary="Attention needed"
+    wav="$item/announcement.wav"
+    trap 'audio_unlock; rm -rf -- "$item"' EXIT
+    audio_lock
+
+    if mic_busy; then
+        if notify_summary "$summary"; then
+            dbg "delivered $token as a meeting notification"
+        else
+            dbg "meeting notification failed for $token"
+        fi
+    elif [ -s "$wav" ]; then
+        if play_file "$wav"; then
+            dbg "played $token successfully"
+        elif notify_summary "$summary"; then
+            dbg "audio playback failed for $token; delivered a notification"
+        else
+            dbg "audio playback and notification both failed for $token"
+        fi
+    else
+        if play_ding; then
+            dbg "played fallback ding for $token"
+        elif notify_summary "$summary"; then
+            dbg "fallback ding failed for $token; delivered a notification"
+        else
+            dbg "fallback ding and notification both failed for $token"
+        fi
+    fi
+    audio_unlock
+    rm -rf -- "$item"
+    trap - EXIT
+    return 0
+}
+
+forward_notification() {
+    local title="$1" body="$2" app_id="$3" icon="$4" category="$5"
+    local urgency="$6" expire_time="$7" replace_id="$8" muted="$9"
+    shift 9
+    local sound_name="$1"
+    shift
+
+    command -v notify-send >/dev/null 2>&1 || return 0
+    # Replace the wrapper process so foot tracks/signals notify-send exactly as
+    # it does with its built-in default command (close and activation semantics).
+    exec notify-send --wait \
+        --app-name "$app_id" \
+        --icon "$app_id" \
+        --category "$category" \
+        --urgency "$urgency" \
+        --expire-time "$expire_time" \
+        --hint "STRING:image-path:$icon" \
+        --hint "BOOLEAN:suppress-sound:$muted" \
+        --hint "STRING:sound-name:$sound_name" \
+        --replace-id "$replace_id" \
+        "$@" --print-id -- "$title" "$body"
+}
+
+dispatch() {
+    [ "$#" -ge 10 ] || return 0
+    local title="$1" body="$2"
+    if [ "$title" = "$TITLE" ]; then
+        dispatch_special "$body" || dbg "ignored missing or invalid internal token '$body'"
+        return 0
+    fi
+    forward_notification "$@"
+}
+
+case "${1:-}" in
+    enqueue)
+        shift
+        enqueue "$@"
+        ;;
+    dispatch)
+        shift
+        dispatch "$@"
+        ;;
+    cleanup)
+        cleanup_stale
+        ;;
+    *)
+        printf 'usage: claude-announce-foot enqueue MODE SUMMARY WAV TTY | dispatch ...\n' >&2
+        exit 64
+        ;;
+esac

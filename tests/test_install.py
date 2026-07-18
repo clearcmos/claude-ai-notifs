@@ -60,7 +60,7 @@ class RuntimeInstall(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0)
-            self.assertEqual(result.stdout, "Claude investigated Okta access.")
+            self.assertEqual(result.stdout, "Investigated Okta access.")
 
     def test_upgrade_atomically_switches_current_and_keeps_old_release(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,6 +110,24 @@ class RuntimeInstall(unittest.TestCase):
                         "type": "command", "command": announce,
                         "args": ["stop"], "async": True,
                     }]}, {"hooks": [{"type": "command", "command": "keepme"}]}],
+                    "PreToolUse": [{
+                        "matcher": "^AskUserQuestion$",
+                        "hooks": [{
+                            "type": "command", "command": announce,
+                            "args": ["ask"], "async": True,
+                        }],
+                    }, {
+                        "matcher": "Write",
+                        "hooks": [{"type": "command", "command": "keep-pretool"}],
+                    }],
+                    "PermissionRequest": [{"hooks": [{
+                        "type": "command", "command": announce,
+                        "args": ["permission"], "async": True,
+                    }]}],
+                    "Notification": [{"hooks": [{
+                        "type": "command", "command": announce,
+                        "args": ["notification"], "async": True,
+                    }]}],
                 }
             }))
             uninstaller = current / "bin" / "claude-announce-uninstall"
@@ -131,6 +149,12 @@ class RuntimeInstall(unittest.TestCase):
                 for hook in entry["hooks"]
             ]
             self.assertEqual(commands, ["keepme"])
+            self.assertEqual(
+                installed["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                "keep-pretool",
+            )
+            self.assertNotIn("PermissionRequest", installed["hooks"])
+            self.assertNotIn("Notification", installed["hooks"])
 
     def test_uninstaller_keeps_runtime_when_settings_are_invalid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -153,6 +177,76 @@ class RuntimeInstall(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertTrue(base.is_dir())
             self.assertIn("Nothing was deleted", result.stdout)
+
+    def test_uninstaller_restores_managed_foot_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory) / "home"
+            repo = fake_repo(directory)
+            base = home / ".local" / "share" / "claude-ai-notifs"
+            current = installer.install_runtime(repo, base)
+            settings = home / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}\n")
+            config = home / ".config" / "foot" / "foot.ini"
+            config.parent.mkdir(parents=True)
+            original = "[main]\nfont=monospace\n"
+            config.write_text(original)
+            configured = subprocess.run(
+                [
+                    sys.executable,
+                    str(current / "bin" / "claude-announce-foot-config.py"),
+                    "configure",
+                    str(config),
+                    str(current / "bin" / "claude-announce-foot"),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(configured.returncode, 0, configured.stderr)
+            (base / "foot-config-path").write_text(str(config) + "\n")
+
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["CLAUDE_SETTINGS"] = str(settings)
+            result = subprocess.run(
+                [str(current / "bin" / "claude-announce-uninstall")],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(config.read_text(), original)
+            self.assertFalse(base.exists())
+
+    def test_uninstaller_keeps_runtime_when_foot_restore_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory) / "home"
+            repo = fake_repo(directory)
+            base = home / ".local" / "share" / "claude-ai-notifs"
+            current = installer.install_runtime(repo, base)
+            settings = home / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}\n")
+            config = home / ".config" / "foot" / "foot.ini"
+            config.parent.mkdir(parents=True)
+            config.write_text("# claude-ai-notifs: begin managed foot notification adapter\n")
+            (base / "foot-config-path").write_text(str(config) + "\n")
+
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["CLAUDE_SETTINGS"] = str(settings)
+            result = subprocess.run(
+                [str(current / "bin" / "claude-announce-uninstall")],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(base.is_dir())
+            self.assertIn("nothing under", result.stdout.lower())
 
 
 if __name__ == "__main__":

@@ -13,12 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Run on both Linux and macOS. macOS is the production target (system bash is
-  # 3.2 with BSD coreutils and lockf), so it exercises the scripts on the shell
-  # and utilities they actually ship against; Linux catches portability
-  # regressions cheaply. The macOS runner also builds both Swift helpers; only
-  # live Foundation Models inference remains local-only because it requires
-  # Apple Intelligence to be enabled.
+  # Run on both production platforms. macOS exercises bash 3.2, BSD utilities,
+  # lockf, and the Swift helpers. Linux exercises the foot/Ollama adapters and
+  # GNU utilities. Live Foundation Models inference and live terminal focus
+  # delivery remain local-only because CI has neither Apple Intelligence nor a
+  # graphical foot session.
   #
   # Actions are pinned to commit SHAs (not mutable version tags) for supply-chain
   # safety; the trailing comment records the human-readable version.
@@ -41,9 +40,12 @@ jobs:
       - name: Shell syntax (bash -n)
         run: |
           bash -n setup.sh
+          bash -n setup-linux.sh
           bash -n bin/claude-announce
+          bash -n bin/claude-announce-foot
           bash -n bin/claude-announce-uninstall
           bash -n tests/test_lock.sh
+          bash -n tests/test_playback.sh
           bash -n tests/test_terminal.sh
           bash -n tests/test_temp.sh
 
@@ -55,9 +57,12 @@ jobs:
         run: |
           shellcheck \
             setup.sh \
+            setup-linux.sh \
             bin/claude-announce \
+            bin/claude-announce-foot \
             bin/claude-announce-uninstall \
             tests/test_lock.sh \
+            tests/test_playback.sh \
             tests/test_terminal.sh \
             tests/test_temp.sh
 
@@ -65,9 +70,13 @@ jobs:
         run: |
           python -m py_compile \
             bin/claude-announce-extract.py \
+            bin/claude-announce-ding.py \
+            bin/claude-announce-foot-config.py \
             bin/claude-announce-focus.py \
             bin/claude-announce-hooks.py \
             bin/claude-announce-install.py \
+            bin/claude-announce-ollama.py \
+            bin/claude-announce-pending.py \
             bin/claude-announce-render.py \
             bin/claude-announce-tts.py
 
@@ -104,13 +113,13 @@ jobs:
           bash tests/test_terminal.sh
           bash tests/test_temp.sh
           bash tests/test_lock.sh
+          bash tests/test_playback.sh
 
-      # Regression-test the hash-locked install on the supported platform (macOS):
+      # Regression-test the universal hash lock on both production platforms:
       # build a venv with the runner's Python 3.12 (the lock's floor), install
       # with --require-hashes, and import the runtime deps. Catches a lock/Python
       # mismatch like numpy 2.5.1 requiring >=3.12.
-      - name: Hash-locked install + import (macOS)
-        if: runner.os == 'macOS'
+      - name: Hash-locked install + import
         run: |
           python -m venv /tmp/lockvenv
           /tmp/lockvenv/bin/pip install --quiet --require-hashes -r requirements.lock

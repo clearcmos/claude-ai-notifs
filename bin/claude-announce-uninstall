@@ -10,13 +10,16 @@ BASE="$HOME/.local/share/claude-ai-notifs"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS="$HERE/claude-announce-hooks.py"
+FOOT_CONFIG_HELPER="$HERE/claude-announce-foot-config.py"
+FOOT_CONFIG_RECORD="$BASE/foot-config-path"
+FOOT_RESTART=""
+PY="$BASE/venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
 
 info() { printf '==> %s\n' "$*"; }
 
 hooks_state="none"          # none | removed | manual
 if [ -f "$SETTINGS" ]; then
-    PY="$BASE/venv/bin/python"
-    [ -x "$PY" ] || PY="$(command -v python3 || true)"
     if [ -n "$PY" ] && [ -f "$HOOKS" ]; then
         if "$PY" "$HOOKS" unwire "$SETTINGS"; then
             hooks_state="removed"
@@ -33,11 +36,55 @@ if [ "$hooks_state" = "manual" ]; then
     info "WARNING: could not remove the claude-announce hooks from $SETTINGS."
     info "They still point into $BASE and will keep firing in new sessions."
     info "Nothing was deleted. Remove the entries mentioning claude-announce under"
-    info "hooks.Stop and hooks.Notification, then delete $BASE by hand."
+    info "hooks.Stop, hooks.PreToolUse, hooks.PermissionRequest, and"
+    info "hooks.Notification, then delete $BASE by hand."
     exit 1
+fi
+
+# Linux foot setup installs a marked adapter block. Remove only that block
+# before deleting the dispatcher it points to. If this cannot be done, keep the
+# runtime in place so ordinary foot notifications are not left targeting a
+# missing executable.
+if [ -f "$FOOT_CONFIG_RECORD" ]; then
+    FOOT_CONFIG=$(head -n 1 "$FOOT_CONFIG_RECORD" 2>/dev/null || true)
+    if [ -n "$FOOT_CONFIG" ] && [ -n "${PY:-}" ] && [ -f "$FOOT_CONFIG_HELPER" ]; then
+        FOOT_ARGS=(restore "$FOOT_CONFIG")
+        if command -v foot >/dev/null 2>&1; then
+            FOOT_ARGS+=(--foot-binary "$(command -v foot)")
+        fi
+        if ! "$PY" "$FOOT_CONFIG_HELPER" "${FOOT_ARGS[@]}"; then
+            info "WARNING: could not restore the foot configuration in $FOOT_CONFIG."
+            info "The Claude hooks were removed, but nothing under $BASE was deleted."
+            info "Remove the block marked 'claude-ai-notifs' from foot.ini and re-run uninstall."
+            exit 1
+        fi
+        FOOT_RESTART=1
+    elif [ -n "$FOOT_CONFIG" ]; then
+        info "WARNING: python or the installed foot configuration helper is missing."
+        info "Nothing under $BASE was deleted because $FOOT_CONFIG may still point there."
+        exit 1
+    fi
+fi
+
+# Remove the user service only when this installer created the exact
+# claude-ai-notifs unit. Never touch a pre-existing system or user ollama unit.
+if [ -f "$BASE/ollama-user-service" ]; then
+    OLLAMA_USER_SERVICE=$(head -n 1 "$BASE/ollama-user-service" 2>/dev/null || true)
+    EXPECTED_USER_SERVICE="$HOME/.config/systemd/user/claude-ai-notifs-ollama.service"
+    if [ "$OLLAMA_USER_SERVICE" = "$EXPECTED_USER_SERVICE" ]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user disable --now claude-ai-notifs-ollama.service >/dev/null 2>&1 || true
+        fi
+        rm -f "$EXPECTED_USER_SERVICE"
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
+        info "removed the claude-ai-notifs Ollama user service"
+    fi
 fi
 
 rm -rf "$BASE"
 info "removed $BASE"
+[ -z "$FOOT_RESTART" ] || info "restart foot to finish removing its notification adapter"
 info "uninstalled. Running Claude sessions keep their hook snapshot until restarted."
 exit 0

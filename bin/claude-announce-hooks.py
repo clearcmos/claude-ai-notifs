@@ -20,7 +20,9 @@ import sys
 import tempfile
 import time
 
-NOTIFICATION_MATCHER = "permission_prompt|agent_needs_input|elicitation_dialog"
+ASK_MATCHER = "^AskUserQuestion$"
+NOTIFICATION_MATCHER = "agent_needs_input|elicitation_dialog"
+MANAGED_EVENTS = ("Stop", "PreToolUse", "PermissionRequest", "Notification")
 
 
 def announce_path(app_root):
@@ -69,14 +71,26 @@ def _hook(announce, arg):
 
 
 def wire(settings, announce):
-    """Add (or refresh) our Stop + Notification hooks, dropping any prior form
-    first so re-runs stay idempotent. Mutates and returns settings."""
+    """Add or refresh the event-native announcement hooks.
+
+    AskUserQuestion and permission dialogs carry authoritative tool_input in
+    PreToolUse and PermissionRequest respectively. Notification is reserved for
+    background-agent and MCP elicitation messages, avoiding a second generic
+    permission_prompt announcement for the same dialog.
+    """
     hooks = settings.setdefault("hooks", {})
-    hooks["Stop"] = [e for e in hooks.get("Stop", []) if not is_ours(e, announce)]
+    for event in MANAGED_EVENTS:
+        hooks[event] = [
+            entry for entry in hooks.get(event, [])
+            if not is_ours(entry, announce)
+        ]
     hooks["Stop"].append({"hooks": [_hook(announce, "stop")]})
-    hooks["Notification"] = [
-        e for e in hooks.get("Notification", []) if not is_ours(e, announce)
-    ]
+    hooks["PreToolUse"].append(
+        {"matcher": ASK_MATCHER, "hooks": [_hook(announce, "ask")]}
+    )
+    hooks["PermissionRequest"].append(
+        {"hooks": [_hook(announce, "permission")]}
+    )
     hooks["Notification"].append(
         {"matcher": NOTIFICATION_MATCHER, "hooks": [_hook(announce, "notification")]}
     )
@@ -84,11 +98,10 @@ def wire(settings, announce):
 
 
 def unwire(settings):
-    """Remove our hooks (any form) from Stop + Notification, dropping an event
-    key entirely once it is empty. Returns True if anything changed."""
+    """Remove our hooks from every managed event, dropping empty event keys."""
     hooks = settings.get("hooks", {})
     changed = False
-    for event in ("Stop", "Notification"):
+    for event in MANAGED_EVENTS:
         entries = hooks.get(event)
         if not entries:
             continue
@@ -102,22 +115,30 @@ def unwire(settings):
     return changed
 
 
+def write_target(path):
+    """Return a symlink's target so atomic replacement preserves the link."""
+    return os.path.realpath(path) if os.path.islink(path) else path
+
+
 def write_atomic(path, settings):
     """Write via a temp sibling + os.replace so a crash mid-write can never
-    truncate settings.json; carry the original file mode over. mkstemp makes
-    the sibling unpredictable and 0600 even outside setup.sh's private umask."""
-    directory = os.path.dirname(path) or "."
-    prefix = os.path.basename(path) + ".tmp."
+    truncate settings.json; carry the original file mode over and preserve a
+    settings.json symlink by replacing its target. mkstemp makes the sibling
+    unpredictable and 0600 even outside setup.sh's private umask."""
+    target = write_target(path)
+    directory = os.path.dirname(target) or "."
+    os.makedirs(directory, exist_ok=True)
+    prefix = os.path.basename(target) + ".tmp."
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, text=True)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(settings, f, indent=2)
             f.write("\n")
         try:
-            os.chmod(tmp, os.stat(path).st_mode)
+            os.chmod(tmp, os.stat(target).st_mode)
         except OSError:
             pass
-        os.replace(tmp, path)
+        os.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -148,7 +169,8 @@ def main(argv):
             settings = {}
         wire(settings, announce)
         write_atomic(path, settings)
-        print("    hooks.Stop and hooks.Notification now run " + announce + " (async)")
+        print("    Claude response and pending-input hooks now run "
+              + announce + " (async)")
         return 0
 
     if len(argv) >= 3 and argv[1] == "unwire":

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Setup for claude-ai-notifs: spoken Claude Code announcements in supported
-# macOS terminals. Idempotent; safe to re-run after pulling changes or to
-# enable additional terminals later.
+# Setup for claude-ai-notifs. Linux dispatches to setup-linux.sh; the remainder
+# of this file is the macOS installer. Both paths are idempotent and safe to
+# re-run after pulling changes.
 #
 #   ./setup.sh              full setup: venv, models, summarizer, terminals, hooks
 #   ./setup.sh --terminals "ghostty,iterm2"
@@ -10,6 +10,8 @@
 #                           against the most recent Claude transcript
 #   ./setup.sh --uninstall  remove the hooks and installed runtime; the same
 #                           uninstaller is also copied into the runtime
+#   ./setup.sh --log-on     enable the private QA trace (installs first if needed)
+#   ./setup.sh --log-off    disable the QA trace but retain debug.log for review
 #
 # What it does:
 #   1. Checks prerequisites (Apple Silicon, Xcode CLT, Python 3.12+) and reports
@@ -23,9 +25,9 @@
 #   5. Asks which installed terminals to announce in (multi-select; re-run to
 #      add more) and records them in ~/.local/share/claude-ai-notifs/
 #      enabled-terminals. Selecting kitty also enables its remote control.
-#   6. Wires hooks.Stop and hooks.Notification in ~/.claude/settings.json to the
-#      stable installed entrypoint (absolute path), backing up the old file first
-#      and removing any older repo-backed/notify-unfocused.sh entry.
+#   6. Wires Stop plus event-native pending-input hooks in
+#      ~/.claude/settings.json to the stable installed entrypoint (absolute
+#      path), backing up the old file first and removing older forms.
 #
 # New-MacBook prerequisites this script checks for but does not install:
 #   xcode-select --install         (swiftc, git)
@@ -37,6 +39,67 @@ umask 077
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 BASE="$HOME/.local/share/claude-ai-notifs"
+SETUP_LOG_AFTER_INSTALL=""
+
+setup_log_on() {
+    mkdir -p "$BASE"
+    chmod 700 "$BASE"
+    touch "$BASE/debug" "$BASE/debug.log"
+    chmod 600 "$BASE/debug" "$BASE/debug.log"
+    printf '%s [setup] QA logging enabled\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+        >> "$BASE/debug.log"
+    printf '==> QA logging enabled: %s\n' "$BASE/debug.log"
+    printf '==> disable it with ./setup.sh --log-off (the log will be retained)\n'
+}
+
+setup_log_off() {
+    if [ -d "$BASE" ]; then
+        if [ -f "$BASE/debug.log" ]; then
+            chmod 600 "$BASE/debug.log" 2>/dev/null || true
+            printf '%s [setup] QA logging disabled\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+                >> "$BASE/debug.log"
+        fi
+        rm -f "$BASE/debug"
+    fi
+    printf '==> QA logging disabled; existing log retained at %s\n' "$BASE/debug.log"
+    if [ -n "${CLAUDE_ANNOUNCE_DEBUG:-}" ]; then
+        printf '==> warning: CLAUDE_ANNOUNCE_DEBUG is set and can still enable logging\n'
+    fi
+}
+
+# Logging is a standalone setup action. On an existing install it toggles
+# immediately without rebuilding anything; on a fresh --log-on invocation the
+# platform installer runs normally and enables the trace only after success.
+SETUP_LOG_ARG=""
+for setup_arg in "$@"; do
+    case "$setup_arg" in --log-on|--log-off) SETUP_LOG_ARG="$setup_arg" ;; esac
+done
+if [ -n "$SETUP_LOG_ARG" ] && [ "$#" -ne 1 ]; then
+    printf 'error: --log-on and --log-off must be used by themselves\n' >&2
+    exit 1
+fi
+case "${1:-}" in
+    --log-off)
+        setup_log_off
+        exit 0
+        ;;
+    --log-on)
+        if [ -x "$BASE/runtime/current/bin/claude-announce" ]; then
+            setup_log_on
+            exit 0
+        fi
+        SETUP_LOG_AFTER_INSTALL=1
+        ;;
+esac
+
+# Keep one public entrypoint while letting each platform own its dependency and
+# terminal integration. The existing macOS installer remains below unchanged.
+case "$(uname -s)" in
+    Linux)  exec "$REPO/setup-linux.sh" "$@" ;;
+    Darwin) ;;
+    *)      printf 'error: supported platforms are macOS and Linux\n' >&2; exit 1 ;;
+esac
+
 RELEASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 # Terminals the announcement runs in (one canonical key per line). The hook
@@ -243,8 +306,8 @@ if [ "${1:-}" = "--test" ]; then
     exit 0
 fi
 
-# --uninstall: surgically remove the claude-announce entries from hooks.Stop
-# and hooks.Notification (other hooks untouched), then delete the runtime dir.
+# --uninstall: surgically remove the claude-announce entries from every managed
+# hook event (other hooks untouched), then delete the runtime dir.
 # Does not restore any backup: backups may predate unrelated settings changes.
 if [ "${1:-}" = "--uninstall" ]; then
     exec "$REPO/bin/claude-announce-uninstall"
@@ -406,6 +469,8 @@ WIRE_PY="${PYTHON:-python3}"
 "$WIRE_PY" "$INSTALLED_ROOT/bin/claude-announce-hooks.py" \
     wire "$INSTALLED_ROOT" "$SETTINGS" \
     || die "hook wiring failed; $SETTINGS was not modified"
+
+[ -z "$SETUP_LOG_AFTER_INSTALL" ] || setup_log_on
 
 info "done. Hooks apply to NEW claude sessions (running ones keep their old hook snapshot)."
 info "the runtime is self-contained; this repo can now be moved or deleted."

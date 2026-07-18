@@ -47,6 +47,8 @@ reset_env; ALACRITTY_WINDOW_ID=4; assert_host alacritty
 reset_env; ITERM_SESSION_ID=5; assert_host iterm2
 reset_env; TERM_PROGRAM=Apple_Terminal; assert_host terminal
 reset_env; TERM_PROGRAM=WezTerm; assert_host wezterm
+reset_env; TERM_PROGRAM=foot; assert_host foot
+reset_env; TERM=foot; assert_host foot
 reset_env; TERM=xterm-kitty; assert_host kitty
 reset_env; TERM=xterm-ghostty; assert_host ghostty
 reset_env; assert_host ""
