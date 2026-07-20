@@ -495,6 +495,10 @@ Latest request: I will check tomorrow
 Report: Nothing can proceed until the reviewer sends approval.
 Result: waiting; evidence: Nothing can proceed until the reviewer sends approval; topic: the reviewer
 
+Latest request: fix the failing lock test
+Report: I've updated tests/test_lock.sh to wait for the child pid, and the suite passes now.
+Result: changed; evidence: I've updated tests/test_lock.sh; topic: the lock test
+
 <latest_user_request>
 $latest_request
 </latest_user_request>

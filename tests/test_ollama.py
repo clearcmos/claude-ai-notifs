@@ -17,13 +17,14 @@ SPEC.loader.exec_module(ollama)
 
 class Handler(BaseHTTPRequestHandler):
     requests = []
+    reject_think = False
 
     def log_message(self, *_args):
         pass
 
-    def send_json(self, value):
+    def send_json(self, value, status=200):
         body = json.dumps(value).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -43,6 +44,10 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length))
         self.requests.append(("POST", self.path, payload))
         if self.path == "/api/generate":
+            if Handler.reject_think and "think" in payload:
+                self.send_json(
+                    {"error": 'json: unknown field "think"'}, status=400)
+                return
             self.send_json({"response": '{"status":"answered","evidence":"answered it","topic":"foot"}'})
         elif self.path == "/api/pull":
             body = b'{"status":"pulling","total":10,"completed":5}\n{"status":"success"}\n'
@@ -98,6 +103,29 @@ class OllamaTests(unittest.TestCase):
         self.assertEqual(payload["keep_alive"], "5m")
         self.assertEqual(payload["format"]["type"], "object")
         self.assertEqual(payload["options"]["temperature"], 0)
+        # Hybrid-thinking models return empty responses unless thinking is
+        # disabled per request; Modelfiles cannot carry the setting.
+        self.assertIs(payload["think"], False)
+
+    def test_think_rejecting_server_gets_one_retry_without_think(self):
+        Handler.reject_think = True
+        try:
+            result = ollama.generate(self.host, "llama3.2:3b", "prompt", True)
+        finally:
+            Handler.reject_think = False
+        self.assertIn('"status":"answered"', result)
+        attempts = [
+            request[2]
+            for request in Handler.requests
+            if request[0] == "POST" and request[1] == "/api/generate"
+        ][-2:]
+        self.assertIn("think", attempts[0])
+        self.assertNotIn("think", attempts[1])
+
+    def test_unrelated_server_error_is_not_retried(self):
+        with self.assertRaises(ollama.OllamaError) as caught:
+            ollama.request_json(self.host, "/api/missing", {"x": 1})
+        self.assertIn("404", str(caught.exception))
 
     def test_pull_stream(self):
         self.assertTrue(ollama.pull(self.host, "llama3.2:3b"))

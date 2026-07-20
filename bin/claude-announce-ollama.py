@@ -82,6 +82,15 @@ def request_json(host, path, payload=None, timeout=5, stream=False):
     request = urllib.request.Request(host + path, data=data, headers=headers)
     try:
         response = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        # The response body says WHY the server refused (e.g. an unknown
+        # request field on an older server); keep it so callers can react.
+        try:
+            detail = error.read().decode("utf-8", "replace").strip()
+        except OSError:
+            detail = ""
+        message = str(error) + ((": " + detail[:200]) if detail else "")
+        raise OllamaError(message) from error
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise OllamaError(str(error)) from error
 
@@ -129,6 +138,11 @@ def generate(host, model, prompt, json_output=False, timeout=60):
         "prompt": prompt,
         "stream": False,
         "keep_alive": "5m",
+        # Hybrid-thinking models (the qwen3 family) otherwise spend the whole
+        # num_predict budget on thinking tokens and return an empty response.
+        # Non-thinking models accept and ignore the field (verified on
+        # llama3.2:3b, Ollama 0.30).
+        "think": False,
         "options": {
             "temperature": 0 if json_output else 0.2,
             "num_predict": 180 if json_output else 60,
@@ -136,7 +150,15 @@ def generate(host, model, prompt, json_output=False, timeout=60):
     }
     if json_output:
         payload["format"] = ASSESSMENT_SCHEMA
-    result = request_json(host, "/api/generate", payload, timeout=timeout)
+    try:
+        result = request_json(host, "/api/generate", payload, timeout=timeout)
+    except OllamaError as error:
+        # Servers predating the think field reject the whole request; retry
+        # once without it so non-thinking models on old Ollama keep working.
+        if "think" not in str(error).lower():
+            raise
+        del payload["think"]
+        result = request_json(host, "/api/generate", payload, timeout=timeout)
     response = result.get("response")
     if not isinstance(response, str) or not response.strip():
         raise OllamaError("Ollama returned an empty response")

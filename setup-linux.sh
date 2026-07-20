@@ -11,7 +11,7 @@ FOOT_CONFIG="${CLAUDE_ANNOUNCE_FOOT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/fo
 RELEASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 LEGACY_BASE="${CLAUDE_ANNOUNCE_LEGACY_BASE:-$HOME/.local/share/claude-announce}"
 OLLAMA_HELPER="$REPO/bin/claude-announce-ollama.py"
-MODEL="${CLAUDE_ANNOUNCE_OLLAMA_MODEL:-llama3.2:3b}"
+MODEL="${CLAUDE_ANNOUNCE_OLLAMA_MODEL:-qwen3.5:4b}"
 UV_VERSION="${CLAUDE_ANNOUNCE_UV_VERSION:-0.11.28}"
 REQUESTED_OLLAMA_HOST="${CLAUDE_ANNOUNCE_OLLAMA_HOST:-${OLLAMA_HOST:-}}"
 
@@ -39,7 +39,7 @@ Usage: ./setup.sh [options]
   --foot-config PATH     configure this foot.ini
   --force-foot-config    override an explicit desktop notification command
   --ollama-host URL      use this explicit Ollama API endpoint
-  --model NAME           Ollama model to provision (default: llama3.2:3b)
+  --model NAME           Ollama model to provision (default: qwen3.5:4b)
 EOF
 }
 
@@ -539,8 +539,8 @@ info "Ollama API: $OLLAMA_URL (version $OLLAMA_VERSION)"
 if "$BOOT_PY" "$OLLAMA_HELPER" has-model "$OLLAMA_URL" "$MODEL"; then
     info "Ollama model: $MODEL already installed"
 else
-    if [ "$MODEL" = "llama3.2:3b" ]; then
-        info "model $MODEL is missing (downloads about 2 GB)"
+    if [ "$MODEL" = "qwen3.5:4b" ]; then
+        info "model $MODEL is missing (downloads about 2.5 GB)"
     else
         info "model $MODEL is missing"
     fi

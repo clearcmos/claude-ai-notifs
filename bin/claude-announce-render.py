@@ -37,10 +37,18 @@ _CHANGE_VERBS = (
     "migrated|modified|patched|refactored|removed|renamed|replaced|resolved|"
     "restored|revoked|saved|updated|wrote"
 )
+# Completed-action grammar matches how assistants actually phrase completions:
+# contractions ("I've updated") and one light adverb ("I also enabled", "we
+# just merged") are accepted (2026-07-20, after real logs showed nearly every
+# true change spoken as neutral "Worked on"). Bare present-tense
+# "is/are + participle" stays excluded on purpose: "access is granted through
+# the administrators group" describes standing behavior, not a completed
+# change (pinned by a regression test).
+_CHANGE_ADVERB = r"(?:(?:also|already|just|now|then|successfully)\s+)?"
 _EXPLICIT_CHANGE = re.compile(
-    rf"(?:\b(?:I|we)\s+(?:have\s+)?(?:{_CHANGE_VERBS})\b|"
-    rf"\b(?:has|have)\s+been\s+(?:{_CHANGE_VERBS})\b|"
-    rf"\b(?:was|were)\s+(?:{_CHANGE_VERBS})\b|"
+    rf"(?:\b(?:I|we)(?:'ve)?\s+(?:have\s+)?{_CHANGE_ADVERB}(?:{_CHANGE_VERBS})\b|"
+    rf"\b(?:has|have)\s+(?:now\s+)?been\s+{_CHANGE_ADVERB}(?:{_CHANGE_VERBS})\b|"
+    rf"\b(?:was|were)\s+{_CHANGE_ADVERB}(?:{_CHANGE_VERBS})\b|"
     rf"^\s*(?:successfully\s+)?(?:{_CHANGE_VERBS})\b)",
     re.IGNORECASE,
 )

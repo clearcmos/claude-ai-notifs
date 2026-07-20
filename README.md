@@ -181,7 +181,7 @@ Linux-specific examples:
 ```sh
 ./setup.sh --dry-run                       # show every planned change
 ./setup.sh --ollama-host 127.0.0.1:11434  # explicit existing Ollama server
-./setup.sh --model llama3.2:3b             # model to verify or pull
+./setup.sh --model qwen3.5:4b              # model to verify or pull
 ./setup.sh --foot-config ~/.config/foot/foot.ini
 ```
 

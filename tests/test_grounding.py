@@ -78,6 +78,37 @@ class GroundedRendering(unittest.TestCase):
         self.assertEqual(render.render(source, value),
                          "Made changes to Maya's Workday access.")
 
+    def test_contracted_completed_change_is_accepted(self):
+        source = ("I've updated the zram configuration to use zstd "
+                  "and committed the change.")
+        value = assessment(
+            "changed",
+            "I've updated the zram configuration",
+            "the zram configuration",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Made changes to the zram configuration.")
+
+    def test_adverbial_completed_change_is_accepted(self):
+        source = "Done. I also enabled the systemd unit and pushed the commit."
+        value = assessment(
+            "changed",
+            "I also enabled the systemd unit",
+            "the systemd unit",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Made changes to the systemd unit.")
+
+    def test_hedged_contracted_change_stays_neutral(self):
+        source = "I've patched the retry loop so it should no longer stall."
+        value = assessment(
+            "changed",
+            "I've patched the retry loop so it should no longer stall",
+            "the retry loop",
+        )
+        self.assertEqual(render.render(source, value),
+                         "Worked on the retry loop.")
+
     def test_general_description_of_how_access_is_granted_is_not_a_change(self):
         source = "I found that access is granted through the administrators group."
         value = assessment(

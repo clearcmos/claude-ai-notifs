@@ -44,6 +44,19 @@ announce the same things.
   not a binary or systemd unit, is authoritative, so manual, containerized,
   user-service, system-service, and explicit remote servers work. Model pulls
   happen only during setup after confirmation, never in a hook.
+  The default model is qwen3.5:4b (2026-07-20, benchmarked): on a ten-case
+  status benchmark it matches Apple's on-device model and qwen2.5-coder:7b
+  (9/10 specific, 9/10 correct status, about 1s per call) where llama3.2:3b,
+  the previous default, reached 6/10 and mislabeled most completed changes
+  `produced`. Every generate call sends `think:false` because hybrid-thinking
+  models (the qwen3 family) otherwise burn the whole num_predict budget on
+  thinking tokens and return an empty response, which silently demoted every
+  announcement to a fallback; a server that rejects the field (predates it)
+  gets one retry without it, so old Ollama plus non-thinking models still
+  works. Modelfiles cannot carry think settings (ollama/ollama#14809), so the
+  per-request field is the only reliable mechanism; the format-plus-think:false
+  bug (ollama/ollama#14645) was fixed before 0.30, and schema enforcement with
+  thinking disabled was verified against a live 0.30.10.
 - Summarizer is Apple's on-device foundation model (FoundationModels
   framework, macOS 26+, Apple Intelligence must be enabled), replacing Ollama.
   Fallback chain: on-device model -> `claude -p --model haiku` (guarded
@@ -112,7 +125,15 @@ announce the same things.
   topic words are allowed), requires explicit
   completed-action grammar for `changed`, guards negative statuses and explicit
   negations, and renders a fixed template;
-  unsupported claims downgrade to neutral "worked on" wording. Requested
+  unsupported claims downgrade to neutral "worked on" wording. The
+  completed-action grammar accepts contractions ("I've updated") and one light
+  adverb ("I also enabled", "we just merged") since 2026-07-20: real debug
+  logs showed 103 of 156 Stop announcements spoken as neutral "Worked on X"
+  because assistants phrase completions exactly that way and the narrow
+  grammar rejected the quotes. Bare present-tense "is/are + participle" stays
+  excluded on purpose ("access is granted through the administrators group"
+  describes standing behavior, not a completed change; a regression test pins
+  this). Requested
   generated or rewritten content uses the separate `produced` status so a poem
   is not mislabeled as an explanation. `produced` is request-gated
   (2026-07-17, after real misses): reply evidence cannot distinguish supplied
@@ -141,9 +162,10 @@ announce the same things.
   request. Unrecognized phrasings fail toward neutral wording, never toward
   a creation claim. The template verb is the softer
   "produced", and the
-  assessment prompt carries a balanced `answered` example because few-shot
-  label imbalance biases small classifiers toward exampled statuses (the
-  model still often says `produced`; the gate, not the prompt, is the
+  assessment prompt carries balanced `answered` and `changed` examples because
+  few-shot label imbalance biases small classifiers toward exampled statuses
+  (llama3.2:3b classified 7 of 10 benchmark replies `produced` before the
+  `changed` example existed, 2026-07-20; the gate, not the prompt, is the
   guarantee). `waiting` covers progress dependent on
   a future event/person/action, and `recapped` covers state/open-item summaries;
   their topics prefer concrete names, systems, projects, artifacts, or
@@ -267,7 +289,7 @@ system/user unit can be started, an unserviced binary can receive a narrowly
 scoped user unit, and otherwise the separately confirmed official installer is
 downloaded to a private file before execution. Python 3.12 is used when it has
 venv/ensurepip support; otherwise setup can install uv privately under BASE
-without modifying shell profiles. setup provisions llama3.2:3b by default,
+without modifying shell profiles. setup provisions qwen3.5:4b by default,
 creates the same locked Kokoro venv/assets, installs the same atomic runtime,
 configures foot, and wires the hooks.
 
