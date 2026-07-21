@@ -505,7 +505,7 @@ Result: produced; evidence: Welcome aboard; topic: greeting
 
 Latest request: do you see the new logging code?
 Report: Yes. The logging toggle lives in setup.sh and writes debug.log.
-Result: answered; evidence: The logging toggle lives in setup.sh; topic: the logging toggle
+Result: verified; evidence: The logging toggle lives in setup.sh; topic: the logging toggle
 
 Latest request: I will check tomorrow
 Report: Nothing can proceed until the reviewer sends approval.
