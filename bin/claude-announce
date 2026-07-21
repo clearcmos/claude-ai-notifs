@@ -86,6 +86,22 @@ OLLAMA_MODEL_VALUE="${CLAUDE_ANNOUNCE_OLLAMA_MODEL:-}"
     || OLLAMA_MODEL_VALUE=$(head -n 1 "$BASE/ollama-model" 2>/dev/null)
 [ -n "$OLLAMA_MODEL_VALUE" ] || OLLAMA_MODEL_VALUE="llama3.2:3b"
 
+# Summarizer backend: "ollama" or "apple". Explicit env wins, then the choice
+# setup recorded, then the platform default: Linux has no Apple model, and
+# macOS installs that predate the choice keep their Apple behavior. Any value
+# other than "ollama" behaves as "apple", failing toward the built-in chain.
+SUMMARIZER_VALUE="${CLAUDE_ANNOUNCE_SUMMARIZER:-}"
+[ -n "$SUMMARIZER_VALUE" ] \
+    || SUMMARIZER_VALUE=$(head -n 1 "$BASE/summarizer" 2>/dev/null)
+if [ -z "$SUMMARIZER_VALUE" ]; then
+    if [ "$PLATFORM" = "Linux" ]; then
+        SUMMARIZER_VALUE="ollama"
+    else
+        SUMMARIZER_VALUE="apple"
+    fi
+fi
+SUMMARIZER_VALUE=$(printf '%s' "$SUMMARIZER_VALUE" | tr '[:upper:]' '[:lower:]')
+
 # Recursion guard: the claude -p fallback is itself a claude session whose
 # Stop hook would run this script again.
 [ -n "$CLAUDE_ANNOUNCE_INNER" ] && exit 0
@@ -417,7 +433,7 @@ $task
 
 One-sentence announcement:"
 
-    if [ "$PLATFORM" = "Linux" ] && [ -f "$OLLAMA" ]; then
+    if [ "$SUMMARIZER_VALUE" = "ollama" ] && [ -f "$OLLAMA" ]; then
         summary=$(printf '%s' "$prompt" \
             | with_timeout 70 "$PY" "$OLLAMA" generate \
                 "$OLLAMA_HOST_VALUE" "$OLLAMA_MODEL_VALUE" --timeout 60 \
@@ -517,7 +533,7 @@ $grounding_text
         fi
     }
 
-    if [ "$PLATFORM" = "Linux" ] && [ -f "$OLLAMA" ] && [ -f "$RENDER" ]; then
+    if [ "$SUMMARIZER_VALUE" = "ollama" ] && [ -f "$OLLAMA" ] && [ -f "$RENDER" ]; then
         ollama_prompt="$assessment_instructions
 
 $assessment_prompt

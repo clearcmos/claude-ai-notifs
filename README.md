@@ -18,11 +18,15 @@ Before you install, three things that shape the experience:
   [clearcmos/foot](https://github.com/clearcmos/foot) fork are supported on
   Wayland. foot itself makes the per-terminal focus decision, so no compositor
   extension or terminal patch is required.
-- **Apple Silicon Mac.** Apple Silicon is required; macOS 26 is not. The fast
-  on-device summarizer needs macOS 26 with Apple Intelligence enabled. On older
-  macOS releases, or when Apple Intelligence is unavailable, summaries fall
-  back to `claude -p --model haiku`, which uses your Claude plan (or API
-  billing) and adds a few seconds per announcement.
+- **Apple Silicon Mac.** Apple Silicon is required; macOS 26 is not. Setup asks
+  whether summaries come from Apple's on-device model or a local Ollama model
+  (re-run any time to switch). The on-device summarizer needs macOS 26 with
+  Apple Intelligence enabled; the Ollama option suits machines with the memory
+  for a strong local model and can be provisioned entirely by setup (Homebrew
+  install, service start, model pull). Whatever is selected, unavailable
+  backends fall through: Ollama to the on-device model to
+  `claude -p --model haiku`, which uses your Claude plan (or API billing) and
+  adds a few seconds per announcement.
 - **Tab-level "are you looking at it?" detection varies by terminal.** Most
   supported terminals can tell whether the finishing session is the tab you are
   actually viewing, so the voice stays quiet when you are watching and speaks
@@ -59,8 +63,9 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
    can exist before its assistant/tool entry reaches the JSONL file. The
    corresponding `PermissionRequest` for an `AskUserQuestion` is suppressed so
    that one question produces only one announcement.
-4. For a completed response, Apple's on-device foundation model on macOS, or a
-   configured Ollama endpoint on Linux, produces a constrained status,
+4. For a completed response, the selected summarizer - a configured Ollama
+   endpoint (Linux always, macOS when chosen at setup) or Apple's on-device
+   foundation model (macOS default) - produces a constrained status,
    exact evidence quote,
    and extractive topic. It sees the latest user request for intent and topic
    context, including whether the reply is requested generated content. Local
@@ -72,9 +77,9 @@ foot and the tabbed fork without depending on the fork's `${pty}` extension.
    neutral "Worked on..." wording. Likewise, the `produced` status is accepted
    only when the latest request positively asks for generated or rewritten
    content; a question that merely discusses generation cannot establish that
-   content was requested. If the model is unavailable,
-   `claude -p --model haiku` produces the same assessment and passes through the
-   same validator. Waiting/dependency replies and state recaps have distinct
+   content was requested. If the selected model is unavailable, the remaining
+   chain (Apple's on-device model on macOS, then `claude -p --model haiku`)
+   produces the same assessment and passes through the same validator. Waiting/dependency replies and state recaps have distinct
    statuses, so a vague latest prompt can still produce a useful announcement
    grounded in concrete names, systems, or artifacts from the reply.
    Pending-input notices continue to use direct one-sentence summarization.
@@ -176,14 +181,29 @@ machine:
 ./setup.sh --log-off # disable tracing while retaining the log
 ```
 
+macOS summarizer selection (interactive by default; flags skip the prompt):
+
+```sh
+./setup.sh --summarizer ollama             # summarize with a local Ollama model
+./setup.sh --summarizer ollama --model qwen3-coder:30b
+./setup.sh --summarizer apple              # back to the on-device model
+```
+
+Choosing Ollama provisions everything: a reachable API is reused, an installed
+server is started (Homebrew service or Ollama.app), or setup offers
+`brew install ollama`, then pulls the model after confirmation. The default
+model follows unified memory: `qwen3-coder:30b` (~19 GB) on machines with
+36 GiB or more, `qwen3.5:4b` (~2.5 GB) otherwise.
+
 Linux-specific examples:
 
 ```sh
 ./setup.sh --dry-run                       # show every planned change
-./setup.sh --ollama-host 127.0.0.1:11434  # explicit existing Ollama server
-./setup.sh --model qwen3.5:4b              # model to verify or pull
 ./setup.sh --foot-config ~/.config/foot/foot.ini
 ```
+
+Both platforms accept `--ollama-host URL` and `--model NAME`; on macOS they
+apply when the Ollama summarizer is selected.
 
 On Linux, setup adds a clearly marked block to `foot.ini`, validates the result
 with `foot --check-config`, and asks before overriding any explicit desktop

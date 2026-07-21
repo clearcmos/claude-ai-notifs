@@ -6,6 +6,12 @@
 #   ./setup.sh              full setup: venv, models, summarizer, terminals, hooks
 #   ./setup.sh --terminals "ghostty,iterm2"
 #                           non-interactive terminal selection (keys, comma/space)
+#   ./setup.sh --summarizer apple|ollama
+#                           non-interactive summarizer selection (re-run to switch)
+#   ./setup.sh --model NAME Ollama model to provision (default picked by RAM)
+#   ./setup.sh --ollama-host URL
+#                           use this explicit Ollama API endpoint
+#   ./setup.sh --yes        assume yes for install/download confirmations
 #   ./setup.sh --test       after setup: run one end-to-end spoken announcement
 #                           against the most recent Claude transcript
 #   ./setup.sh --uninstall  remove the hooks and installed runtime; the same
@@ -20,12 +26,18 @@
 #      into ~/.local/share/claude-ai-notifs.
 #   3. Compiles the Apple Foundation Models summarizer with swiftc and reports
 #      whether Apple Intelligence is enabled.
-#   4. Installs all runtime scripts as an atomic, versioned release under
+#   4. Asks whether announcements summarize with the Apple on-device model or
+#      a local Ollama model (re-run to switch). Choosing Ollama provisions it:
+#      reuse a reachable API, start an installed server, or offer a Homebrew
+#      install, then pull the selected model and record the choice in
+#      ~/.local/share/claude-ai-notifs/summarizer. Apple and claude -p remain
+#      runtime fallbacks either way.
+#   5. Installs all runtime scripts as an atomic, versioned release under
 #      ~/.local/share/claude-ai-notifs/runtime; the repo is not needed at runtime.
-#   5. Asks which installed terminals to announce in (multi-select; re-run to
+#   6. Asks which installed terminals to announce in (multi-select; re-run to
 #      add more) and records them in ~/.local/share/claude-ai-notifs/
 #      enabled-terminals. Selecting kitty also enables its remote control.
-#   6. Wires Stop plus event-native pending-input hooks in
+#   7. Wires Stop plus event-native pending-input hooks in
 #      ~/.claude/settings.json to the stable installed entrypoint (absolute
 #      path), backing up the old file first and removing older forms.
 #
@@ -102,6 +114,38 @@ esac
 
 RELEASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+
+# Summarizer flags (env vars work too; flags win). Empty SUMMARIZER means the
+# interactive picker in section 4 decides.
+SUMMARIZER="${CLAUDE_ANNOUNCE_SUMMARIZER:-}"
+MODEL="${CLAUDE_ANNOUNCE_OLLAMA_MODEL:-}"
+REQUESTED_OLLAMA_HOST="${CLAUDE_ANNOUNCE_OLLAMA_HOST:-${OLLAMA_HOST:-}}"
+ASSUME_YES=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+        --summarizer)   i=$((i + 1)); SUMMARIZER="${args[$i]:-}" ;;
+        --summarizer=*) SUMMARIZER="${arg#--summarizer=}" ;;
+        --model)        i=$((i + 1)); MODEL="${args[$i]:-}" ;;
+        --model=*)      MODEL="${arg#--model=}" ;;
+        --ollama-host)  i=$((i + 1)); REQUESTED_OLLAMA_HOST="${args[$i]:-}" ;;
+        --ollama-host=*) REQUESTED_OLLAMA_HOST="${arg#--ollama-host=}" ;;
+        --yes|-y)       ASSUME_YES=1 ;;
+    esac
+done
+case "$SUMMARIZER" in ""|apple|ollama) ;; *)
+    printf 'error: --summarizer must be "apple" or "ollama"\n' >&2; exit 1 ;;
+esac
+
+confirm() {
+    local prompt="$1" reply
+    [ -n "$ASSUME_YES" ] && return 0
+    [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+    printf '%s [y/N] ' "$prompt" > /dev/tty
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
+}
 # Terminals the announcement runs in (one canonical key per line). The hook
 # reads this and stays silent in terminals not listed here.
 ENABLED_FILE="$BASE/enabled-terminals"
@@ -264,6 +308,25 @@ if [ "${1:-}" = "--test" ]; then
     else
         info "on-device summarizer: not built (claude -p fallback will be used)"
     fi
+    test_summarizer=$(head -n 1 "$BASE/summarizer" 2>/dev/null || true)
+    if [ "$test_summarizer" = "ollama" ]; then
+        test_host=$(head -n 1 "$BASE/ollama-host" 2>/dev/null || true)
+        test_model=$(head -n 1 "$BASE/ollama-model" 2>/dev/null || true)
+        info "summarizer choice: ollama ($test_model)"
+        if [ -x "$BASE/venv/bin/python" ] && [ -n "$test_host" ] \
+                && test_probe=$("$BASE/venv/bin/python" "$REPO/bin/claude-announce-ollama.py" probe "$test_host" 2>/dev/null); then
+            info "Ollama: reachable (${test_probe#*$'\t'}) at ${test_probe%%$'\t'*}"
+            if "$BASE/venv/bin/python" "$REPO/bin/claude-announce-ollama.py" has-model "$test_host" "$test_model" 2>/dev/null; then
+                info "Ollama model: ok"
+            else
+                info "Ollama model: MISSING ($test_model) - announcements fall back to Apple/claude -p"
+            fi
+        else
+            info "Ollama: UNREACHABLE at ${test_host:-unset} - announcements fall back to Apple/claude -p"
+        fi
+    else
+        info "summarizer choice: ${test_summarizer:-apple (default)}"
+    fi
     if command -v claude >/dev/null 2>&1; then
         info "claude CLI (fallback summarizer): ok"
     else
@@ -415,11 +478,13 @@ done
 
 # 3. Apple Foundation Models summarizer --------------------------------------
 
+AFM_OK=""
 info "compiling claude-announce-summarize (Apple Foundation Models)"
 if swiftc -O -parse-as-library "$REPO/src/claude-announce-summarize.swift" \
         -o "$BASE/bin/claude-announce-summarize" 2>/dev/null; then
     if avail=$("$BASE/bin/claude-announce-summarize" --check 2>/dev/null); then
         info "on-device model: $avail"
+        AFM_OK=1
     else
         info "on-device model: ${avail:-unavailable}"
         info "enable it under System Settings > Apple Intelligence & Siri;"
@@ -439,7 +504,142 @@ else
     rm -f "$BASE/bin/claude-announce-miccheck"
 fi
 
-# 4. Self-contained runtime --------------------------------------------------
+# 4. Summarizer selection ------------------------------------------------------
+# Announcements can be summarized by the Apple on-device model (zero extra
+# footprint, needs Apple Intelligence) or by a local Ollama model (measured
+# more accurate on machines with the memory for a strong model; see CLAUDE.md).
+# The choice lands in $BASE/summarizer and the runtime honors it; the Apple
+# model and claude -p stay in the fallback chain either way, so a stopped
+# Ollama only degrades an announcement, never drops it.
+
+OLLAMA_HELPER="$REPO/bin/claude-announce-ollama.py"
+HELPER_PY="$BASE/venv/bin/python"
+
+# Default Ollama model by unified memory: a ~19 GB 30B MoE model needs real
+# headroom; below 36 GiB the 4B model is the safe pick.
+mem_gib=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
+if [ -z "$MODEL" ]; then
+    if [ "$mem_gib" -ge 36 ]; then MODEL="qwen3-coder:30b"; else MODEL="qwen3.5:4b"; fi
+fi
+model_size_hint() {
+    case "$1" in
+        qwen3-coder:30b) printf '~19 GB download' ;;
+        qwen3.5:4b)      printf '~2.5 GB download' ;;
+        *)               printf 'size varies by model' ;;
+    esac
+}
+
+RECORDED_SUMMARIZER=$(head -n 1 "$BASE/summarizer" 2>/dev/null || true)
+if [ -z "$SUMMARIZER" ]; then
+    # Interactive pick. Default: the recorded choice on a re-run, else Apple
+    # when it is available, else Ollama (the alternative is the claude -p
+    # fallback on every announcement).
+    default_choice=1
+    [ "$RECORDED_SUMMARIZER" = "ollama" ] && default_choice=2
+    [ -z "$RECORDED_SUMMARIZER" ] && [ -z "$AFM_OK" ] && default_choice=2
+    if [ -e /dev/tty ]; then
+        echo
+        info "Which summarizer should write the spoken announcements?"
+        if [ -n "$AFM_OK" ]; then
+            printf '     1) Apple on-device model (no downloads, near-zero memory)\n'
+        else
+            printf '     1) Apple on-device model (NOT available on this Mac; falls back to claude -p)\n'
+        fi
+        printf '     2) Ollama local model: %s (%s' "$MODEL" "$(model_size_hint "$MODEL")"
+        [ "$mem_gib" -lt 16 ] && printf '; NOTE: %s GiB RAM is tight for local models' "$mem_gib"
+        printf ')\n'
+        printf '     choose 1 or 2, or press Enter for %s: ' "$default_choice"
+        read -r summarizer_reply < /dev/tty || summarizer_reply=""
+        case "${summarizer_reply:-$default_choice}" in
+            2) SUMMARIZER="ollama" ;;
+            *) SUMMARIZER="apple" ;;
+        esac
+    else
+        SUMMARIZER="${RECORDED_SUMMARIZER:-apple}"
+        [ "$SUMMARIZER" = "ollama" ] || SUMMARIZER="apple"
+    fi
+fi
+
+probe_ollama() { "$HELPER_PY" "$OLLAMA_HELPER" probe "$1" 2>/dev/null; }
+wait_for_ollama() {
+    local host="$1" count=0 result
+    while [ "$count" -lt 30 ]; do
+        if result=$(probe_ollama "$host"); then printf '%s' "$result"; return 0; fi
+        sleep 1
+        count=$((count + 1))
+    done
+    return 1
+}
+
+if [ "$SUMMARIZER" = "ollama" ]; then
+    OLLAMA_CANDIDATE="${REQUESTED_OLLAMA_HOST:-http://127.0.0.1:11434}"
+    OLLAMA_PROBE=$(probe_ollama "$OLLAMA_CANDIDATE" || true)
+    if [ -z "$OLLAMA_PROBE" ] && [ -n "$REQUESTED_OLLAMA_HOST" ]; then
+        die "the explicitly configured Ollama endpoint is unreachable: $REQUESTED_OLLAMA_HOST"
+    fi
+
+    # API not reachable: start an existing install before offering a new one.
+    if [ -z "$OLLAMA_PROBE" ]; then
+        if command -v brew >/dev/null 2>&1 && brew list --formula ollama >/dev/null 2>&1; then
+            info "starting the installed Homebrew Ollama service"
+            brew services start ollama >/dev/null
+        elif [ -d "/Applications/Ollama.app" ]; then
+            info "launching the installed Ollama app"
+            open -ga Ollama
+        elif command -v ollama >/dev/null 2>&1; then
+            die "found $(command -v ollama) but no service manager for it; run 'ollama serve' and re-run setup"
+        else
+            command -v brew >/dev/null 2>&1 \
+                || die "Ollama is not installed and Homebrew was not found; install Ollama from https://ollama.com/download and re-run"
+            info "Ollama is not installed. Homebrew would install the ollama formula"
+            info "and run it as a background service (brew services start ollama)."
+            confirm "Install Ollama with Homebrew now?" \
+                || die "Ollama installation was declined; re-run and pick the Apple summarizer instead"
+            brew install ollama
+            brew services start ollama >/dev/null
+        fi
+        OLLAMA_PROBE=$(wait_for_ollama "$OLLAMA_CANDIDATE" || true)
+        [ -n "$OLLAMA_PROBE" ] \
+            || die "Ollama did not become reachable at $OLLAMA_CANDIDATE; start it and re-run setup"
+    fi
+
+    OLLAMA_URL=${OLLAMA_PROBE%%$'\t'*}
+    OLLAMA_VERSION=${OLLAMA_PROBE#*$'\t'}
+    info "Ollama API: $OLLAMA_URL (version $OLLAMA_VERSION)"
+
+    if "$HELPER_PY" "$OLLAMA_HELPER" has-model "$OLLAMA_URL" "$MODEL"; then
+        info "Ollama model: $MODEL already installed"
+    else
+        info "model $MODEL is missing ($(model_size_hint "$MODEL"))"
+        confirm "Download the Ollama model now?" || die "model download was declined"
+        "$HELPER_PY" "$OLLAMA_HELPER" pull "$OLLAMA_URL" "$MODEL"
+        "$HELPER_PY" "$OLLAMA_HELPER" has-model "$OLLAMA_URL" "$MODEL" \
+            || die "Ollama did not report $MODEL after the pull completed"
+    fi
+
+    # One tiny generation proves the model actually answers on this server
+    # (a first load of a large model can take several seconds). Warn only:
+    # the runtime falls back to Apple/claude -p until Ollama responds.
+    if printf 'Reply with the single word ok.' \
+            | "$HELPER_PY" "$OLLAMA_HELPER" generate "$OLLAMA_URL" "$MODEL" --timeout 120 >/dev/null 2>&1; then
+        info "Ollama summarizer: verified ($MODEL responds)"
+    else
+        info "warning: $MODEL did not answer a test generation; announcements will"
+        info "fall back to the Apple model / claude -p until Ollama responds"
+    fi
+
+    printf '%s\n' "$OLLAMA_URL" > "$BASE/ollama-host"
+    printf '%s\n' "$MODEL" > "$BASE/ollama-model"
+fi
+
+printf '%s\n' "$SUMMARIZER" > "$BASE/summarizer"
+if [ "$SUMMARIZER" = "ollama" ]; then
+    info "summarizer: ollama ($MODEL)"
+else
+    info "summarizer: apple on-device model"
+fi
+
+# 5. Self-contained runtime --------------------------------------------------
 
 info "installing self-contained runtime scripts"
 INSTALLED_ROOT=$("$BASE/venv/bin/python" "$REPO/bin/claude-announce-install.py" \
@@ -448,7 +648,7 @@ ANNOUNCE="$INSTALLED_ROOT/bin/claude-announce"
 [ -x "$ANNOUNCE" ] || die "installed entrypoint is missing: $ANNOUNCE"
 info "runtime entrypoint: $ANNOUNCE"
 
-# 5. Terminal selection ------------------------------------------------------
+# 6. Terminal selection ------------------------------------------------------
 
 # Preselection for non-interactive installs: CLAUDE_ANNOUNCE_TERMINALS env var
 # or  --terminals "ghostty,iterm2"  on the command line. Empty => interactive.
@@ -461,7 +661,7 @@ for ((i = 1; i <= $#; i++)); do
 done
 choose_terminals "$PRESELECT"
 
-# 6. Hook wiring --------------------------------------------------------------
+# 7. Hook wiring --------------------------------------------------------------
 
 info "wiring hooks into $SETTINGS"
 WIRE_PY="${PYTHON:-python3}"

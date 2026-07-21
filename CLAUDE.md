@@ -35,9 +35,10 @@ announce the same things.
   notify-send call for every unrelated notification, including action
   arguments and activation stdout. `CLAUDE_ANNOUNCE_FORCE=1` directly
   dispatches only for setup's audible test.
-- Linux summarization uses Ollama's HTTP API with the same grounded
-  status/evidence/topic prompt and claude-announce-render.py validator as the
-  macOS Foundation Models and Haiku paths. The assessment request supplies a
+- Ollama summarization - Linux always, macOS when selected at setup - uses
+  Ollama's HTTP API with the same grounded status/evidence/topic prompt and
+  claude-announce-render.py validator as the macOS Foundation Models and Haiku
+  paths. The assessment request supplies a
   JSON schema and a five-minute keep_alive. Runtime endpoint precedence is an
   explicit env host, then setup's persisted endpoint, then loopback; setup never
   scans the LAN. API reachability,
@@ -48,7 +49,12 @@ announce the same things.
   status benchmark it matches Apple's on-device model and qwen2.5-coder:7b
   (9/10 specific, 9/10 correct status, about 1s per call) where llama3.2:3b,
   the previous default, reached 6/10 and mislabeled most completed changes
-  `produced`. Every generate call sends `think:false` because hybrid-thinking
+  `produced`. The macOS setup default is RAM-gated: qwen3-coder:30b on 36 GiB+
+  unified memory, else qwen3.5:4b. On an M5 Pro 48 GB (2026-07-21, same ten
+  cases) qwen3-coder:30b scored 10/10 with grounded evidence at 0.62s warm per
+  call versus 9/10 at 1.06s for the on-device model, and was the only model to
+  classify the yes/no state check as `verified` - the measured basis for
+  offering Ollama on capable Macs. Every generate call sends `think:false` because hybrid-thinking
   models (the qwen3 family) otherwise burn the whole num_predict budget on
   thinking tokens and return an empty response, which silently demoted every
   announcement to a fallback; a server that rejects the field (predates it)
@@ -57,11 +63,20 @@ announce the same things.
   per-request field is the only reliable mechanism; the format-plus-think:false
   bug (ollama/ollama#14645) was fixed before 0.30, and schema enforcement with
   thinking disabled was verified against a live 0.30.10.
-- Summarizer is Apple's on-device foundation model (FoundationModels
-  framework, macOS 26+, Apple Intelligence must be enabled), replacing Ollama.
-  Fallback chain: on-device model -> `claude -p --model haiku` (guarded
+- The macOS summarizer is selected at setup and recorded in $BASE/summarizer;
+  CLAUDE_ANNOUNCE_SUMMARIZER overrides it per run, and any value other than
+  "ollama" behaves as "apple", so stale or garbled state fails toward the
+  built-in chain. "apple" (the default, and the behavior of installs that
+  predate the choice) uses the on-device foundation model (FoundationModels
+  framework, macOS 26+, Apple Intelligence must be enabled); "ollama" consults
+  the configured Ollama endpoint first. Fallback chain: Ollama (when
+  selected) -> on-device model -> `claude -p --model haiku` (guarded
   against hook recursion via CLAUDE_ANNOUNCE_INNER) -> deterministic neutral
   sentence for Stop, or plain ding for a pending-input notice.
+- The yes/no few-shot example in the assessment prompt shows `verified`
+  (2026-07-21): it previously showed `answered`, contradicting rule 4 and
+  teaching every backend to mislabel real verified cases (a state check
+  answered with "Yes - ...").
 - Pending-input summarization keeps the full instruction in the prompt with a
   "One-sentence announcement:" trailer. Tested: putting that entire formatting
   instruction in `LanguageModelSession(instructions:)` makes the small on-device
