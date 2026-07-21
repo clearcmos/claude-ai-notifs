@@ -171,7 +171,10 @@ with_timeout() {
     fi
     "$@" &
     local pid=$!
-    ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
+    # The watchdog must not inherit stdout/stderr: inside $(...) capture the
+    # orphaned sleep would otherwise hold the pipe's write end open after the
+    # command finishes, blocking the substitution for the full timeout.
+    ( exec >/dev/null 2>&1; sleep "$secs" && kill -TERM "$pid" 2>/dev/null ) &
     local watcher=$!
     wait "$pid" 2>/dev/null
     local rc=$?
