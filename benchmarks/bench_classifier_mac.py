@@ -1,7 +1,8 @@
 import json, os, subprocess, time
 from importlib.machinery import SourceFileLoader
 HOME = os.path.expanduser("~")
-ol = SourceFileLoader("ol", HOME + "/git/personal/claude-ai-notifs/bin/claude-announce-ollama.py").load_module()
+_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "claude-announce-ollama.py")
+ol = SourceFileLoader("ol", os.path.abspath(_bin)).load_module()
 SUM = HOME + "/.local/share/claude-ai-notifs/bin/claude-announce-summarize"
 MODEL = "qwen3-coder:30b"
 HOST = "http://127.0.0.1:11434"
