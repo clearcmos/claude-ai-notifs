@@ -52,8 +52,11 @@ def make_handler(hits):
     return Handler
 
 
-class SummarizerChoiceTests(unittest.TestCase):
-    def run_darwin_stop(self, summarizer_file, env_extra, hits, port):
+class DarwinRuntime(unittest.TestCase):
+    def run_darwin_stop(
+        self, summarizer_file, env_extra, hits, port, extra_shims=None,
+        mode="stop", payload=None,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             home = root / "home"
@@ -85,6 +88,7 @@ class SummarizerChoiceTests(unittest.TestCase):
                 "afplay": "#!/bin/sh\nexit 0\n",
                 "say": "#!/bin/sh\nexit 0\n",
             }
+            shims.update(extra_shims or {})
             for name, script in shims.items():
                 shim = commands / name
                 shim.write_text(script)
@@ -102,8 +106,8 @@ class SummarizerChoiceTests(unittest.TestCase):
             env.update(env_extra)
 
             result = subprocess.run(
-                [str(current / "bin" / "claude-announce"), "stop"],
-                input=json.dumps({
+                [str(current / "bin" / "claude-announce"), mode],
+                input=json.dumps(payload or {
                     "last_assistant_message": "I answered the summarizer question in detail."
                 }),
                 env=env,
@@ -121,6 +125,8 @@ class SummarizerChoiceTests(unittest.TestCase):
         thread.start()
         return server, thread, hits
 
+
+class SummarizerChoiceTests(DarwinRuntime):
     def test_recorded_ollama_choice_consults_ollama_on_darwin(self):
         server, thread, hits = self.serve()
         try:
@@ -152,6 +158,75 @@ class SummarizerChoiceTests(unittest.TestCase):
             server.shutdown()
             thread.join()
             server.server_close()
+
+
+FAKE_CLAUDE = """#!{python}
+import json, os, sys
+with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
+    log.write(json.dumps({{
+        "argv": sys.argv[1:],
+        "inner": os.environ.get("CLAUDE_ANNOUNCE_INNER"),
+    }}) + "\\n")
+print(json.dumps({{
+    "status": "answered",
+    "evidence": "answered the summarizer question",
+    "topic": "summarizer question",
+}}))
+"""
+
+
+class HaikuFallbackIsolationTests(DarwinRuntime):
+    """The claude -p fallback must start no MCP servers, get no tools, and keep
+    no session: a user's MCP launchers can each spend secret-store quota, and
+    this fallback can run on every turn (2026-09-26)."""
+
+    def fallback_calls(self, mode="stop", payload=None):
+        with tempfile.TemporaryDirectory() as directory:
+            log = pathlib.Path(directory) / "claude.log"
+            log.touch()
+            server, thread, hits = self.serve()
+            try:
+                self.run_darwin_stop(
+                    None,
+                    {"FAKE_CLAUDE_LOG": str(log)},
+                    hits,
+                    server.server_port,
+                    extra_shims={"claude": FAKE_CLAUDE.format(python=sys.executable)},
+                    mode=mode,
+                    payload=payload,
+                )
+            finally:
+                server.shutdown()
+                thread.join()
+                server.server_close()
+            return [json.loads(line) for line in log.read_text().splitlines()]
+
+    def assert_isolated(self, call, prompt_fragment):
+        argv = call["argv"]
+        self.assertEqual(call["inner"], "1")
+        self.assertEqual(argv[0], "-p")
+        self.assertIn(prompt_fragment, argv[1])
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertIn("--no-session-persistence", argv)
+        # --tools is variadic: it must be last, holding only the empty list.
+        self.assertEqual(argv[-2:], ["--tools", ""])
+
+    def test_stop_fallback_is_isolated(self):
+        calls = self.fallback_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assert_isolated(calls[0], "I answered the summarizer question")
+
+    def test_pending_fallback_is_isolated(self):
+        calls = self.fallback_calls(
+            mode="ask",
+            payload={
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [{"question": "Which repo?"}]},
+            },
+        )
+        self.assertEqual(len(calls), 1, calls)
+        self.assert_isolated(calls[0], "Which repo?")
 
 
 if __name__ == "__main__":

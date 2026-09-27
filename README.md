@@ -26,7 +26,8 @@ Before you install, three things that shape the experience:
   install, service start, model pull). Whatever is selected, unavailable
   backends fall through: Ollama to the on-device model to
   `claude -p --model haiku`, which uses your Claude plan (or API billing) and
-  adds a few seconds per announcement.
+  adds a few seconds per announcement. That call starts none of your MCP
+  servers, has no tools, and saves no session.
 - **Tab-level "are you looking at it?" detection varies by terminal.** Most
   supported terminals can tell whether the finishing session is the tab you are
   actually viewing, so the voice stays quiet when you are watching and speaks

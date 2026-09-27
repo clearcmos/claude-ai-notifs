@@ -73,6 +73,14 @@ announce the same things.
   selected) -> on-device model -> `claude -p --model haiku` (guarded
   against hook recursion via CLAUDE_ANNOUNCE_INNER) -> deterministic neutral
   sentence for Stop, or plain ding for a pending-input notice.
+- Isolated Haiku fallback (2026-09-26, after a real incident): `claude_haiku`
+  runs `claude -p` with `--strict-mcp-config --no-session-persistence
+  --tools ""`. Without them every fallback inherited the user's full config
+  and started every MCP server. With the Ollama model missing, the fallback ran
+  on every turn for weeks, and two MCP launchers that each read a secret-store
+  entry at startup exhausted that store's daily API quota. The prompt precedes the flags because `--tools` is variadic
+  and swallows a trailing positional. tests/test_summarizer.py pins the argv
+  on both the Stop and pending-input paths.
 - The yes/no few-shot example in the assessment prompt shows `verified`
   (2026-07-21): it previously showed `answered`, contradicting rule 4 and
   teaching every backend to mislabel real verified cases (a state check

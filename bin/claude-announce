@@ -411,6 +411,14 @@ fi
 dbg "task: ${#task} chars"
 is_pending_mode && dbg "pending input: [$task]"
 
+# Haiku fallback as a bare text call: no MCP servers, tools, or saved session.
+# The prompt precedes the flags because the variadic --tools would swallow it.
+claude_haiku() {
+    CLAUDE_ANNOUNCE_INNER=1 with_timeout 60 claude -p "$1" --model haiku \
+        --strict-mcp-config --no-session-persistence --tools "" \
+        2>/dev/null </dev/null
+}
+
 # Normalize a model sentence for speech: drop double quotes, collapse
 # whitespace, and cap at 300 CHARACTERS. A byte cap (head -c) can split a
 # multibyte character and hand invalid UTF-8 to TTS or notify-send, so the
@@ -452,8 +460,7 @@ One-sentence announcement:"
         dbg "on-device summarizer: ${#summary} chars"
     fi
     if [ -z "$summary" ] && command -v claude >/dev/null 2>&1; then
-        summary=$(CLAUDE_ANNOUNCE_INNER=1 with_timeout 60 \
-            claude -p --model haiku "$prompt" 2>/dev/null </dev/null | clean)
+        summary=$(claude_haiku "$prompt" | clean)
         [ -n "$summary" ] && via="claude -p"
         dbg "claude -p fallback: ${#summary} chars"
     fi
@@ -563,8 +570,7 @@ Return exactly one JSON object with string fields evidence, status, and topic."
 $assessment_prompt
 
 Return exactly one JSON object with string fields evidence, status, and topic."
-        assessment=$(CLAUDE_ANNOUNCE_INNER=1 with_timeout 60 \
-            claude -p --model haiku "$haiku_prompt" 2>/dev/null </dev/null)
+        assessment=$(claude_haiku "$haiku_prompt")
         summary=$(printf '%s' "$assessment" | render_assessment | clean)
         [ -n "$summary" ] && via="claude -p grounded"
         dbg "claude -p grounded fallback: ${#summary} chars"
